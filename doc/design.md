@@ -123,6 +123,26 @@ To scale beyond millions of keys without hitting Garbage Collection limits or po
 * **Zero-GC Overhead:** Because the index is off-heap, it is entirely invisible to the JVM Garbage Collector, eliminating the multi-second "Stop-the-World" pauses that occur when tracing standard Java heap maps (`HashMap<String, KeyEntry>`) containing tens of millions of objects.
 * **Cache-Local Linear Probing:** Uses a flat open-addressed hash map structure. Linear probing guarantees that colliding records are stored sequentially in adjacent memory slots, fully capitalizing on CPU L1/L2 data prefetching.
 
+### 3.3. Static Sizing & `expectedKeys` Rationale
+In open-addressed hash tables, dynamic resizing (reallocating a larger off-heap block and copying/re-hashing all active slots) is extremely costly and introduces sudden, massive latency spikes. 
+
+To maintain strict sub-millisecond point write guarantees, VulcanoStore utilizes a **static, pre-sized off-heap layout** based on the configured `expectedKeys` capacity:
+*   **Formula:** `Total Memory = (expectedKeys / Load Factor) * 42 bytes`
+*   **Load Factor Threshold:** Enforces a conservative **Load Factor of 0.7** to minimize hash collisions and search times.
+*   **Example (Default Config):** For the default capacity of `expectedKeys = 10,000,000`, VulcanoStore allocates exactly:
+    $$\text{Total Slots} = \frac{10,000,000}{0.7} = 14,285,714 \text{ slots}$$
+    $$\text{Total Bytes} = 14,285,714 \text{ slots} \times 42 \text{ bytes} \approx 600,000,000 \text{ bytes} \ (\sim 572 \text{ MB})$$
+    of native off-heap memory on startup.
+
+This design decision guarantees a highly predictable memory footprint, zero runtime resizing overhead, and perfectly flat latency profiles throughout the lifecycle of the database.
+
+### 3.4. Capacity Exhaustion Safety Boundaries
+Because the off-heap mapping uses a fixed-size slot array under open-addressing, approaching a 100% load factor would trigger massive collision chains and dangerous infinite search loops. To guarantee production reliability, VulcanoStore enforces a **strict safety boundary**:
+1.  **Unique Key Tracking:** The storage engine maintains an internal count of currently indexed unique keys.
+2.  **Exhaustion Limit:** The maximum number of allowed unique keys is capped exactly at the configured `expectedKeys` capacity (corresponding to the safe **0.7 load factor** limit).
+3.  **New Key Rejection:** If the unique key limit is reached, calling `put` with a **new key** (not already present in `KeyDir`) will immediately throw an `IllegalStateException` (e.g., `"Database index capacity exceeded. Capped at X keys."`).
+4.  **Existing Key Overwrites Permitted:** Updates to **existing keys** remain fully functional and succeed even when the capacity is reached, because they reuse their existing pre-allocated slot in the `MemorySegment` and do not consume additional off-heap memory.
+
 ---
 
 ## 4. KeyDir Entry Layout & Technical Design Decisions
