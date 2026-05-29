@@ -72,12 +72,19 @@ We will build the custom off-heap linear-probing index using Java 25 Foreign Fun
 ## 📋 Phase 5: Multi-Segment Management & Crash Recovery
 We will orchestrate multiple data log files and restore state on boot.
 
-* [ ] **Task 5.1: Write tests for Segment Rollover**
+* [x] **Task 5.1: Write tests for Segment Rollover**
   * *Red:* Write tests verifying that when the active segment size threshold (e.g. configured to 1MB for testing) is reached, it closes, writes a placeholder, and opens a new active file with incremented `fileId`.
-* [ ] **Task 5.2: Write tests for Startup Crash Recovery**
+* [x] **Task 5.2: Write tests for Startup Crash Recovery**
   * *Red:* Write tests executing sequential writes, force-closing the engine (simulating a crash), and asserting that a fresh instance restores all keys from the disk logs.
-* [ ] **Task 5.3: Implement `StorageEngine` Segment Orchestrator**
+* [x] **Task 5.3: Implement `StorageEngine` Segment Orchestrator**
   * *Green:* Coordinate multiple segments, active file selection, and full directory boot recovery.
+
+> [!NOTE]
+> **Phase 5 Execution Report:** Completed both RED and GREEN phases for multi-segment management and crash recovery.
+> 1. Implemented a directory-scanning bootstrapper inside `StorageEngine` that automatically detects existing `.data` segment files, sorts them, and determines the correct active `fileId` sequence.
+> 2. Added capacity tracking using `writeOffset` to trigger transparent segment rollovers.
+> 3. Implemented `recover(OffHeapKeyDir)` to sequentially rebuild the off-heap index on startup by reading headers, payload sizes, and tracking key offsets, handling active updates and tombstone deletions.
+> 4. Verified all Phase 5 unit and integration tests are 100% green (`mvn test` runs successfully for `StorageEngineTest` with 0 failures).
 
 ---
 

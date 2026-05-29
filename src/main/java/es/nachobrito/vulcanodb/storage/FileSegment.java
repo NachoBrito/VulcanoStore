@@ -67,6 +67,15 @@ public class FileSegment implements AutoCloseable {
     }
 
     /**
+     * Returns the current sequential write offset of the segment.
+     *
+     * @return the write offset in bytes.
+     */
+    public long getWriteOffset() {
+        return writeOffset;
+    }
+
+    /**
      * Appends a binary record sequentially to the end of the segment.
      *
      * @param record the {@link BinaryRecord} to write.
