@@ -1,4 +1,4 @@
-package es.nachobrito.vulcanodb.storage;
+package es.nachobrito.vulcanostore.storage;
 
 import org.junit.jupiter.api.Test;
 import java.nio.ByteBuffer;

@@ -37,9 +37,9 @@ graph TD
 VulcanoStore exposes modern byte-array APIs to maximize performance and avoid heap allocations, along with convenient UTF-8 String wrappers.
 
 ```java
-import es.nachobrito.vulcanodb.VulcanoConfig;
-import es.nachobrito.vulcanodb.VulcanoStore;
-import es.nachobrito.vulcanodb.VulcanoStoreImpl;
+import es.nachobrito.vulcanostore.VulcanoConfig;
+import es.nachobrito.vulcanostore.VulcanoStore;
+import es.nachobrito.vulcanostore.VulcanoStoreImpl;
 import java.io.IOException;
 import java.nio.file.Paths;
 import java.util.Optional;
@@ -106,7 +106,7 @@ VulcanoStore comes equipped with a GC-centric profiling tool that measures point
 
 To execute the profiling tool:
 ```bash
-mvn exec:java -Dexec.mainClass="es.nachobrito.vulcanodb.benchmark.VulcanoBenchmark" -Dexec.classpathScope="test"
+mvn exec:java -Dexec.mainClass="es.nachobrito.vulcanostore.benchmark.VulcanoBenchmark" -Dexec.classpathScope="test"
 ```
 
 ### Reference Metrics (NVMe SSD Local Run):

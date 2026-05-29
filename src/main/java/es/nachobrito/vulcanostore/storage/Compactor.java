@@ -1,6 +1,6 @@
-package es.nachobrito.vulcanodb.storage;
+package es.nachobrito.vulcanostore.storage;
 
-import es.nachobrito.vulcanodb.VulcanoConfig;
+import es.nachobrito.vulcanostore.VulcanoConfig;
 
 import java.io.IOException;
 import java.nio.file.Files;

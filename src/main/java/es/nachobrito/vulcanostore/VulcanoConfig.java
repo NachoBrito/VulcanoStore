@@ -1,4 +1,4 @@
-package es.nachobrito.vulcanodb;
+package es.nachobrito.vulcanostore;
 
 import java.nio.file.Path;
 

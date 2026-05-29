@@ -1,4 +1,4 @@
-package es.nachobrito.vulcanodb;
+package es.nachobrito.vulcanostore;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

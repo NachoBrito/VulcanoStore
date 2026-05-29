@@ -1,4 +1,4 @@
-package es.nachobrito.vulcanodb;
+package es.nachobrito.vulcanostore;
 
 import java.io.IOException;
 import java.util.Optional;

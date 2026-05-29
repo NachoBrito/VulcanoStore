@@ -21,7 +21,7 @@ Traditional embedded databases suffer from concurrency bottlenecks and high lock
 VulcanoStore exposes a clean, developer-friendly Java interface. The library natively supports byte array operations to maximize performance and avoid garbage collection overhead, while offering convenient String-based methods.
 
 ```java
-package es.nachobrito.vulcanodb;
+package es.nachobrito.vulcanostore;
 
 import java.io.IOException;
 import java.util.Optional;

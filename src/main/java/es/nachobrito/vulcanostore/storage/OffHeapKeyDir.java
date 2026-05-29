@@ -1,4 +1,4 @@
-package es.nachobrito.vulcanodb.storage;
+package es.nachobrito.vulcanostore.storage;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;

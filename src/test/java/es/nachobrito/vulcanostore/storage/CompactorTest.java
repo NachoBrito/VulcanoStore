@@ -1,7 +1,7 @@
-package es.nachobrito.vulcanodb.storage;
+package es.nachobrito.vulcanostore.storage;
 
-import es.nachobrito.vulcanodb.SyncStrategy;
-import es.nachobrito.vulcanodb.VulcanoConfig;
+import es.nachobrito.vulcanostore.SyncStrategy;
+import es.nachobrito.vulcanostore.VulcanoConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 

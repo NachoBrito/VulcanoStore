@@ -1,7 +1,7 @@
-package es.nachobrito.vulcanodb.benchmark;
+package es.nachobrito.vulcanostore.benchmark;
 
-import es.nachobrito.vulcanodb.VulcanoConfig;
-import es.nachobrito.vulcanodb.VulcanoStoreImpl;
+import es.nachobrito.vulcanostore.VulcanoConfig;
+import es.nachobrito.vulcanostore.VulcanoStoreImpl;
 
 import java.io.IOException;
 import java.lang.management.GarbageCollectorMXBean;

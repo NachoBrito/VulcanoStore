@@ -1,4 +1,4 @@
-package es.nachobrito.vulcanodb;
+package es.nachobrito.vulcanostore;
 
 /**
  * Defines the synchronization strategy for flushing MappedByteBuffer dirty pages to physical disk.

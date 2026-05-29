@@ -1,9 +1,9 @@
-package es.nachobrito.vulcanodb;
+package es.nachobrito.vulcanostore;
 
-import es.nachobrito.vulcanodb.storage.BinaryRecord;
-import es.nachobrito.vulcanodb.storage.Compactor;
-import es.nachobrito.vulcanodb.storage.OffHeapKeyDir;
-import es.nachobrito.vulcanodb.storage.StorageEngine;
+import es.nachobrito.vulcanostore.storage.BinaryRecord;
+import es.nachobrito.vulcanostore.storage.Compactor;
+import es.nachobrito.vulcanostore.storage.OffHeapKeyDir;
+import es.nachobrito.vulcanostore.storage.StorageEngine;
 
 import java.io.IOException;
 import java.util.Optional;
