@@ -6,7 +6,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Coordinates active and inactive file segments inside the VulcanoStore database.
@@ -52,18 +54,19 @@ public class StorageEngine implements AutoCloseable {
             Files.createDirectories(dbPath);
         }
 
-        // Scan directory on boot to locate existing segment files
+        // Scan directory on boot to locate existing segment files (either data or hint)
         int maxFileId = 0;
         try (var stream = Files.list(dbPath)) {
-            var dataFiles = stream
+            var files = stream
                 .filter(Files::isRegularFile)
-                .filter(p -> p.getFileName().toString().matches("\\d{8}\\.data"))
-                .sorted((p1, p2) -> p1.getFileName().toString().compareTo(p2.getFileName().toString()))
+                .filter(p -> p.getFileName().toString().matches("\\d{8}\\.(data|hint)"))
+                .map(p -> p.getFileName().toString().substring(0, 8))
+                .map(Integer::parseInt)
+                .sorted()
                 .toList();
 
-            if (!dataFiles.isEmpty()) {
-                String lastFileName = dataFiles.get(dataFiles.size() - 1).getFileName().toString();
-                maxFileId = Integer.parseInt(lastFileName.substring(0, 8));
+            if (!files.isEmpty()) {
+                maxFileId = files.get(files.size() - 1);
             }
         }
 
@@ -96,6 +99,9 @@ public class StorageEngine implements AutoCloseable {
         if (activeSegment.getWriteOffset() + recordSize > config.getSegmentSize()) {
             // Rollover: close current active segment
             activeSegment.close();
+
+            // Write hint file for the closed active segment
+            writeHintFile(activeSegment.getFilePath());
             
             // Map the closed segment as inactive
             inactiveSegments.put(activeFileId, new FileSegment(activeFileId, activeSegment.getFilePath(), config.getSegmentSize()));
@@ -165,22 +171,30 @@ public class StorageEngine implements AutoCloseable {
 
         Path dbPath = config.getDbPath();
         try (var stream = Files.list(dbPath)) {
-            var dataFiles = stream
-                .filter(Files::isRegularFile)
-                .filter(p -> p.getFileName().toString().matches("\\d{8}\\.data"))
-                .sorted((p1, p2) -> p1.getFileName().toString().compareTo(p2.getFileName().toString()))
-                .toList();
+            Set<Integer> fileIds = new HashSet<>();
+            stream.forEach(p -> {
+                String name = p.getFileName().toString();
+                if (name.matches("\\d{8}\\.(data|hint)")) {
+                    fileIds.add(Integer.parseInt(name.substring(0, 8)));
+                }
+            });
 
-            for (Path path : dataFiles) {
-                String fileName = path.getFileName().toString();
-                int fileId = Integer.parseInt(fileName.substring(0, 8));
+            java.util.List<Integer> sortedFileIds = fileIds.stream().sorted().toList();
 
+            for (int fileId : sortedFileIds) {
                 // Skip the current active segment file since it is newly initialized
                 if (fileId == activeFileId) {
                     continue;
                 }
 
-                recoverSegment(path, fileId, index);
+                Path hintPath = dbPath.resolve(String.format("%08d.hint", fileId));
+                Path dataPath = dbPath.resolve(String.format("%08d.data", fileId));
+
+                if (Files.exists(hintPath)) {
+                    recoverSegmentFromHint(hintPath, fileId, index);
+                } else if (Files.exists(dataPath)) {
+                    recoverSegment(dataPath, fileId, index);
+                }
             }
         }
     }
@@ -206,7 +220,7 @@ public class StorageEngine implements AutoCloseable {
                     int totalSize = 22 + keyLen + valLen;
 
                     long keyOffset = offset + 22;
-                    long valueOffset = offset; // In Bitcask, the index valueOffset points to the start of the record
+                    long valueOffset = offset;
 
                     if (record.isTombstone()) {
                         index.remove(key);
@@ -222,6 +236,87 @@ public class StorageEngine implements AutoCloseable {
         }
     }
 
+    private void recoverSegmentFromHint(Path hintPath, int fileId, OffHeapKeyDir index) throws IOException {
+        long capacity = Files.size(hintPath);
+        if (capacity < 22) {
+            return;
+        }
+
+        byte[] hintBytes = Files.readAllBytes(hintPath);
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(hintBytes);
+
+        while (buffer.remaining() >= 22) {
+            long timestamp = buffer.getLong();
+            long offset = buffer.getLong();
+            int valLen = buffer.getInt();
+            int keyLen = buffer.getShort() & 0xFFFF;
+
+            if (buffer.remaining() < keyLen) {
+                break;
+            }
+
+            byte[] key = new byte[keyLen];
+            buffer.get(key);
+
+            long keyOffset = offset + 22;
+            long valueOffset = offset;
+
+            if (valLen == -1) {
+                index.remove(key);
+            } else {
+                index.put(key, fileId, valLen, valueOffset, keyOffset, timestamp);
+            }
+        }
+    }
+
+    private void writeHintFile(Path dataFilePath) {
+        String fileName = dataFilePath.getFileName().toString();
+        Path hintFilePath = dataFilePath.getParent().resolve(fileName.replace(".data", ".hint"));
+        try {
+            long dataSize = Files.size(dataFilePath);
+            if (dataSize < 22) {
+                return;
+            }
+
+            int fileId = Integer.parseInt(fileName.substring(0, 8));
+            try (FileSegment segment = new FileSegment(fileId, dataFilePath, dataSize);
+                 java.io.FileOutputStream fos = new java.io.FileOutputStream(hintFilePath.toFile());
+                 java.io.BufferedOutputStream bos = new java.io.BufferedOutputStream(fos)) {
+
+                long offset = 0;
+                while (offset + 22 <= dataSize) {
+                    try {
+                        BinaryRecord record = segment.read(offset);
+                        if (record.timestamp() == 0 && record.key().length == 0) {
+                            break;
+                        }
+
+                        byte[] key = record.key();
+                        int keyLen = key.length;
+                        int valLen = record.isTombstone() ? 0 : record.value().length;
+                        int totalSize = 22 + keyLen + valLen;
+
+                        java.nio.ByteBuffer headerBuf = java.nio.ByteBuffer.allocate(22);
+                        headerBuf.putLong(record.timestamp());
+                        headerBuf.putLong(offset);
+                        headerBuf.putInt(record.isTombstone() ? -1 : valLen);
+                        headerBuf.putShort((short) keyLen);
+
+                        bos.write(headerBuf.array());
+                        bos.write(key);
+
+                        offset += totalSize;
+                    } catch (Exception e) {
+                        break;
+                    }
+                }
+                bos.flush();
+            }
+        } catch (IOException e) {
+            // Silently ignore or handle recovery generation error to maintain runtime durability resilience
+        }
+    }
+
     /**
      * Safely closes the active and inactive segment file channels and locks.
      *
@@ -231,6 +326,10 @@ public class StorageEngine implements AutoCloseable {
     public void close() throws IOException {
         if (activeSegment != null) {
             activeSegment.close();
+            // Write hint file for final active segment on normal close if it contains data
+            if (activeSegment.getWriteOffset() > 0) {
+                writeHintFile(activeSegment.getFilePath());
+            }
         }
         for (FileSegment seg : inactiveSegments.values()) {
             if (seg != null) {

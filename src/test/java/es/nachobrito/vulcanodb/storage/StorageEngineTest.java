@@ -97,4 +97,96 @@ public class StorageEngineTest {
             assertEquals(1001L, readB.timestamp());
         }
     }
+
+    @Test
+    public void testHintFileGeneration(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(50) // small segment size to force rollover
+                .expectedKeys(100)
+                .build();
+
+        try (StorageEngine engine = new StorageEngine(config)) {
+            BinaryRecord record1 = new BinaryRecord(1000L, "k1".getBytes(), "value1".getBytes(), 0);
+            engine.write(record1);
+
+            // Write 2nd record: serialized size 30. Exceeds 50 threshold, triggering segment 1 rollover
+            BinaryRecord record2 = new BinaryRecord(1001L, "k2".getBytes(), "value2".getBytes(), 0);
+            engine.write(record2);
+
+            // Assert that "00000001.hint" physically exists in the database folder
+            Path hintPath = tempDir.resolve("00000001.hint");
+            assertTrue(Files.exists(hintPath));
+
+            // Verify content of the hint file
+            // Format: Timestamp(8B) + Offset(8B) + Value Size(4B) + Key Size(2B) + Key(Var)
+            // Header is 22 bytes. Total size: 22 + key length (2) = 24 bytes.
+            assertEquals(24, Files.size(hintPath));
+
+            byte[] hintBytes = Files.readAllBytes(hintPath);
+            java.nio.ByteBuffer buffer = java.nio.ByteBuffer.wrap(hintBytes);
+
+            assertEquals(1000L, buffer.getLong());      // Timestamp
+            assertEquals(0L, buffer.getLong());         // Offset in .data segment
+            assertEquals(6, buffer.getInt());           // Value size
+            assertEquals(2, buffer.getShort());         // Key size
+            byte[] keyBytes = new byte[2];
+            buffer.get(keyBytes);
+            assertArrayEquals("k1".getBytes(), keyBytes); // Key
+        }
+
+        // Assert that the active segment also gets a hint file when the database is closed
+        Path activeHintPath = tempDir.resolve("00000002.hint");
+        assertTrue(Files.exists(activeHintPath));
+    }
+
+    @Test
+    public void testHintDrivenStartup(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(1024 * 1024)
+                .expectedKeys(100)
+                .build();
+
+        // 1. Write some keys and close the engine to produce data and hint files
+        try (StorageEngine engine = new StorageEngine(config)) {
+            BinaryRecord rec1 = new BinaryRecord(1000L, "hintKeyA".getBytes(), "hintValA".getBytes(), 0);
+            BinaryRecord rec2 = new BinaryRecord(1001L, "hintKeyB".getBytes(), "hintValB".getBytes(), 0);
+
+            engine.write(rec1);
+            engine.write(rec2);
+        }
+
+        // Assert that data file exists
+        Path dataPath = tempDir.resolve("00000001.data");
+        assertTrue(Files.exists(dataPath));
+
+        // Note: For now, hintPath might not exist because hint files are not yet implemented.
+        // During the TDD RED phase of Task 6.2, we must prepare the test but expect failure.
+        // We will mock/write a dummy hint file or simply delete the data file and expect recovery to fail.
+        // Since no hint file is written yet, deleting the .data file will mean recovery returns nothing.
+        Files.delete(dataPath);
+        assertFalse(Files.exists(dataPath));
+
+        // 2. Open a fresh index and recover
+        try (OffHeapKeyDir index = new OffHeapKeyDir(100);
+             StorageEngine engine = new StorageEngine(config)) {
+
+            // Reconstruct the index solely from hint files
+            engine.recover(index);
+
+            // Assert that the index was successfully and fully populated
+            OffHeapKeyDir.Slot slotA = index.get("hintKeyA".getBytes());
+            assertNotNull(slotA);
+            assertEquals(1, slotA.fileId());
+            assertEquals(8, slotA.valueSize());
+            assertEquals(1000L, slotA.timestamp());
+
+            OffHeapKeyDir.Slot slotB = index.get("hintKeyB".getBytes());
+            assertNotNull(slotB);
+            assertEquals(1, slotB.fileId());
+            assertEquals(8, slotB.valueSize());
+            assertEquals(1001L, slotB.timestamp());
+        }
+    }
 }
