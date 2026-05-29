@@ -318,6 +318,33 @@ public class StorageEngine implements AutoCloseable {
     }
 
     /**
+     * Returns the current active segment file ID.
+     *
+     * @return the active file ID.
+     */
+    public int getActiveFileId() {
+        return activeFileId;
+    }
+
+    /**
+     * Safely closes the specified inactive segment, removes it from management,
+     * and physically deletes its associated .data and .hint files from disk.
+     *
+     * @param fileId the segment ID to close and remove.
+     * @throws IOException if a low-level filesystem or channel error occurs.
+     */
+    public void closeAndRemoveSegment(int fileId) throws IOException {
+        FileSegment seg = inactiveSegments.remove(fileId);
+        if (seg != null) {
+            seg.close();
+        }
+        Path dataPath = config.getDbPath().resolve(String.format("%08d.data", fileId));
+        Path hintPath = config.getDbPath().resolve(String.format("%08d.hint", fileId));
+        Files.deleteIfExists(dataPath);
+        Files.deleteIfExists(hintPath);
+    }
+
+    /**
      * Safely closes the active and inactive segment file channels and locks.
      *
      * @throws IOException if a low-level close error occurs.

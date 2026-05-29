@@ -150,7 +150,7 @@ public class OffHeapKeyDir implements AutoCloseable {
         }
         this.expectedKeys = expectedKeys;
         this.totalSlots = (long) (expectedKeys / LOAD_FACTOR);
-        this.arena = Arena.ofConfined();
+        this.arena = Arena.ofShared();
         
         long slotsBytes = totalSlots * SLOT_SIZE;
         this.segment = arena.allocate(slotsBytes);

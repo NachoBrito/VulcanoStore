@@ -111,12 +111,20 @@ We will add companion compact indexes for rapid startup.
 ## 📋 Phase 7: Background Compaction (Compactor)
 We will implement background cleanups to reclaim deleted or obsolete data space.
 
-* [ ] **Task 7.1: Write tests for Log Compaction (Merging)**
+* [x] **Task 7.1: Write tests for Log Compaction (Merging)**
   * *Red:* Write integration tests simulating multiple updates/deletions of keys and asserting that the merge processor successfully discards stale entries, reclaiming disk space.
-* [ ] **Task 7.2: Write tests for Atomic Index Swapping**
+* [x] **Task 7.2: Write tests for Atomic Index Swapping**
   * *Red:* Write tests verifying that index references (`fileId` and `offset`) swap atomically in the main index without blocking concurrent lookup commands.
-* [ ] **Task 7.3: Implement background `Compactor`**
+* [x] **Task 7.3: Implement background `Compactor`**
   * *Green:* Implement background thread worker that merges inactive segments and commits updates.
+
+> [!NOTE]
+> **Phase 7 Execution Report:** Completed both TDD RED and GREEN phases for background compaction and atomic index swapping.
+> 1. Developed `Compactor.java` containing the background worker thread loop, synchronous `compact()` triggers, and atomic coordinate updating.
+> 2. Implemented active-record migrations: compacting inactive segments sequentially, checking the index to discard stale/deleted records, and migrating valid records to active segments.
+> 3. Implemented safe cleanup in `StorageEngine`: closing memory-mapped file channels and physically deleting `.data` and `.hint` files from disk after compaction.
+> 4. Addressed FFM concurrent thread limitations by switching `OffHeapKeyDir` to a `Shared Arena` (`Arena.ofShared()`) and synchronizing reads/swaps on the index block.
+> 5. Verified all compaction, rollover, recovery, and concurrency swapping tests are 100% green.
 
 ---
 
