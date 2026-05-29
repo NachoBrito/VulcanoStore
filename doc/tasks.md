@@ -55,14 +55,17 @@ We will establish serialization and single-file memory-mapped access.
 ## 📋 Phase 4: Zero-GC Off-Heap FFM Index (`OffHeapKeyDir`)
 We will build the custom off-heap linear-probing index using Java 25 Foreign Function & Memory APIs.
 
-* [ ] **Task 4.1: Write comprehensive tests for `OffHeapKeyDir`**
+* [x] **Task 4.1: Write comprehensive tests for `OffHeapKeyDir`**
   * *Red:* Write tests asserting:
     1. Correct O(1) hash resolution.
     2. Linear probing and hash collision resolution.
     3. Index boundary wrapping (when index wraps around the end of the flat `MemorySegment`).
     4. Safe allocation and immediate native deallocation upon closing the `Arena`.
-* [ ] **Task 4.2: Implement `OffHeapKeyDir` using JEP 454**
-  * *Green:* Allocate contiguous memory using a `Confined Arena` and implement the 42-byte slot layout and open-addressing lookup logic.
+* [x] **Task 4.2: Implement `OffHeapKeyDir` using JEP 454**
+  * *Green:* Allocate contiguous memory using a `Confined Arena` and implement the 48-byte aligned slot layout and open-addressing lookup logic.
+
+> [!NOTE]
+> **Phase 4 Execution Report:** Built the custom zero-GC off-heap linear-probing index `OffHeapKeyDir` using Java 25 JEP 454 FFM APIs. Allocated contiguous memory via a confined `Arena`. Padded the open-addressing slot layout to exactly **48 bytes** to guarantee strict 64-bit alignment and satisfy FFM boundary checks. Developed parallel off-heap arrays for key verification. Tested all index operations, updates, tombstones, linear probes, boundary wrapping, and deallocation safety with 100% green tests.
 
 ---
 
