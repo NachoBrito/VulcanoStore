@@ -28,10 +28,10 @@ public class CompactorTest {
         VulcanoConfig config = VulcanoConfig.builder()
                 .dbPath(tempDir)
                 .segmentSize(50)
-                .expectedKeys(100)
+                .maxKeyMemoryMb(4)
                 .build();
 
-        try (OffHeapKeyDir index = new OffHeapKeyDir(100);
+        try (OffHeapKeyDir index = new OffHeapKeyDir(4);
              StorageEngine engine = new StorageEngine(config)) {
 
             // We write a few records to produce multiple inactive segments
@@ -100,10 +100,10 @@ public class CompactorTest {
         VulcanoConfig config = VulcanoConfig.builder()
                 .dbPath(tempDir)
                 .segmentSize(1024 * 1024)
-                .expectedKeys(100)
+                .maxKeyMemoryMb(4)
                 .build();
 
-        try (OffHeapKeyDir index = new OffHeapKeyDir(100);
+        try (OffHeapKeyDir index = new OffHeapKeyDir(4);
              StorageEngine engine = new StorageEngine(config)) {
 
             // Write two valid records representing alternative valid states for "key"

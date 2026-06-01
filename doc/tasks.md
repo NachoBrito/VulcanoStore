@@ -144,3 +144,28 @@ We will validate that we meet the production-quality and zero-GC goals.
 > 2. **Write (PUT) Throughput:** achieved **612,359.03 ops/sec** with an average latency of **1.6 microseconds** (99th percentile: 7.9 microseconds).
 > 3. **Read (GET) Throughput:** achieved **1,775,538.86 ops/sec** with an average latency of **0.6 microseconds** (99th percentile: 4.1 microseconds).
 > 4. **GC Profile:** JVM Garbage Collector MXBean monitors recorded exactly **0 GC Collections** and **0 ms of GC Pause Duration** throughout the point read and write loops, validating our FFM off-heap memory design.
+
+---
+
+## 📋 Phase 9: Off-Heap Key Memory Limit Tracking
+We will replace expected key count capacities with a physical off-heap key memory limit (in MB) and throw custom exceptions when exceeded.
+
+* [x] **Task 9.1: Write failing TDD tests for key memory limit enforcement**
+  * *Red:* Write tests in `VulcanoStoreTest.java` and `OffHeapKeyDirTest.java` to verify that exceeding the `maxKeyMemoryMb` limit throws `VulcanoKeyMemoryLimitExceededException`.
+  * *Red:* Write tests asserting that overwriting existing keys remains permitted at full capacity and that deleting keys reclaims key memory.
+* [x] **Task 9.2: Implement `VulcanoKeyMemoryLimitExceededException`**
+  * *Green:* Implement the custom exception extending `IllegalStateException` providing granular fields for current usage, limit, and violating key length.
+* [x] **Task 9.3: Refactor configuration and tracking in `OffHeapKeyDir` and `VulcanoStoreImpl`**
+  * *Green:* Replace `expectedKeys` with `maxKeyMemoryMb` in `VulcanoConfig`.
+  * *Green:* Calculate safe linear-probing slots internally based on a conservative 24-byte key size estimate.
+  * *Green:* Track active keys memory usage, checking and throwing before raw keys are allocated, and decrementing usage on deletions.
+  * *Green:* Verify all 31 tests are completely green.
+
+> [!NOTE]
+> **Phase 9 Execution Report:** Successfully completed TDD RED, GREEN, and REFACTOR phases for key memory limit tracking.
+> 1. Replaced the `expectedKeys` configuration option with `maxKeyMemoryMb`, providing a default limit of 128 MB.
+> 2. Created the custom exception `VulcanoKeyMemoryLimitExceededException` to allow clients to cleanly handle database key capacity overflow.
+> 3. Implemented a precise tracking mechanism of active unique keys' memory usage off-heap.
+> 4. Structured the `OffHeapKeyDir` index slots count assuming a realistic 24-byte key size estimate, ensuring the physical key memory limit is reached before slot capacity saturation.
+> 5. Verified that deleting active keys reclaims their memory allocation space, enabling subsequent new insertions.
+> 6. All 31 tests compile and execute cleanly with 100% success.

@@ -17,14 +17,14 @@ public class VulcanoConfigTest {
         VulcanoConfig config = VulcanoConfig.builder()
                 .dbPath(tempPath)
                 .segmentSize(64 * 1024 * 1024)
-                .expectedKeys(5_000_000)
+                .maxKeyMemoryMb(256)
                 .syncStrategy(SyncStrategy.SYNC_ALWAYS)
                 .syncIntervalMs(100)
                 .build();
 
         assertEquals(tempPath, config.getDbPath());
         assertEquals(64 * 1024 * 1024, config.getSegmentSize());
-        assertEquals(5_000_000, config.getExpectedKeys());
+        assertEquals(256, config.getMaxKeyMemoryMb());
         assertEquals(SyncStrategy.SYNC_ALWAYS, config.getSyncStrategy());
         assertEquals(100, config.getSyncIntervalMs());
     }
@@ -57,19 +57,19 @@ public class VulcanoConfigTest {
     }
 
     @Test
-    public void testExpectedKeysMustBePositive() {
+    public void testMaxKeyMemoryMustBePositive() {
         Path tempPath = Paths.get("/tmp/vulcanodb-test");
         assertThrows(IllegalArgumentException.class, () -> {
             VulcanoConfig.builder()
                     .dbPath(tempPath)
-                    .expectedKeys(0)
+                    .maxKeyMemoryMb(0)
                     .build();
         });
 
         assertThrows(IllegalArgumentException.class, () -> {
             VulcanoConfig.builder()
                     .dbPath(tempPath)
-                    .expectedKeys(-5)
+                    .maxKeyMemoryMb(-5)
                     .build();
         });
     }

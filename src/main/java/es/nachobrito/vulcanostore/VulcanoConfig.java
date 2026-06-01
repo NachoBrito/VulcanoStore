@@ -26,14 +26,13 @@ public class VulcanoConfig {
     private final long segmentSize;
 
     /**
-     * The expected number of unique keys that will be stored in the database.
+     * The maximum off-heap memory size allocated for unique active keys in MB.
      * <p>
-     * This parameter is utilized to size the off-heap {@code OffHeapKeyDir} linear-probing index table
-     * to ensure optimal hash distribution and minimize collision chains.
-     * Default value is 10,000,000 keys.
+     * This parameter limits the total memory occupied by the active keys in the database.
+     * Default value is 128 MB.
      * </p>
      */
-    private final long expectedKeys;
+    private final long maxKeyMemoryMb;
 
     /**
      * The synchronization strategy for flushing native memory-mapped pages back to physical storage.
@@ -56,7 +55,7 @@ public class VulcanoConfig {
     private VulcanoConfig(Builder builder) {
         this.dbPath = builder.dbPath;
         this.segmentSize = builder.segmentSize;
-        this.expectedKeys = builder.expectedKeys;
+        this.maxKeyMemoryMb = builder.maxKeyMemoryMb;
         this.syncStrategy = builder.syncStrategy;
         this.syncIntervalMs = builder.syncIntervalMs;
     }
@@ -80,12 +79,12 @@ public class VulcanoConfig {
     }
 
     /**
-     * Returns the expected unique keys capacity target for off-heap index sizing.
+     * Returns the configured maximum off-heap key memory limit in MB.
      *
-     * @return the expected key count capacity.
+     * @return the maximum key memory limit in MB.
      */
-    public long getExpectedKeys() {
-        return expectedKeys;
+    public long getMaxKeyMemoryMb() {
+        return maxKeyMemoryMb;
     }
 
     /**
@@ -121,7 +120,7 @@ public class VulcanoConfig {
     public static class Builder {
         private Path dbPath;
         private long segmentSize = 128 * 1024 * 1024; // 128MB default
-        private long expectedKeys = 10_000_000;      // 10M keys default
+        private long maxKeyMemoryMb = 128;           // 128MB default
         private SyncStrategy syncStrategy = SyncStrategy.SYNC_INTERVAL;
         private long syncIntervalMs = 500;           // 500ms default
 
@@ -148,13 +147,13 @@ public class VulcanoConfig {
         }
 
         /**
-         * Sets the expected key count capacity target for sizing the off-heap index.
+         * Sets the maximum off-heap key memory limit in MB.
          *
-         * @param expectedKeys the expected unique key count. Must be positive.
+         * @param maxKeyMemoryMb the maximum key memory limit in MB. Must be positive.
          * @return this builder instance for method chaining.
          */
-        public Builder expectedKeys(long expectedKeys) {
-            this.expectedKeys = expectedKeys;
+        public Builder maxKeyMemoryMb(long maxKeyMemoryMb) {
+            this.maxKeyMemoryMb = maxKeyMemoryMb;
             return this;
         }
 
@@ -184,7 +183,7 @@ public class VulcanoConfig {
          * Assembles, validates, and returns a new {@link VulcanoConfig} instance.
          *
          * @return the validated {@link VulcanoConfig} object.
-         * @throws IllegalArgumentException if dbPath or syncStrategy is null, or if segmentSize, expectedKeys, or syncIntervalMs is non-positive.
+         * @throws IllegalArgumentException if dbPath or syncStrategy is null, or if segmentSize, maxKeyMemoryMb, or syncIntervalMs is non-positive.
          */
         public VulcanoConfig build() {
             if (dbPath == null) {
@@ -193,8 +192,8 @@ public class VulcanoConfig {
             if (segmentSize <= 0) {
                 throw new IllegalArgumentException("Segment size must be positive");
             }
-            if (expectedKeys <= 0) {
-                throw new IllegalArgumentException("Expected keys capacity must be positive");
+            if (maxKeyMemoryMb <= 0) {
+                throw new IllegalArgumentException("Maximum key memory must be positive");
             }
             if (syncStrategy == null) {
                 throw new IllegalArgumentException("Sync strategy cannot be null");

@@ -32,7 +32,7 @@ public class VulcanoStoreImpl implements VulcanoStore {
         }
         this.config = config;
         try {
-            this.index = new OffHeapKeyDir(config.getExpectedKeys());
+            this.index = new OffHeapKeyDir(config.getMaxKeyMemoryMb());
             this.storageEngine = new StorageEngine(config);
             
             // Recover index state from disk logs on boot
@@ -56,6 +56,19 @@ public class VulcanoStoreImpl implements VulcanoStore {
         }
 
         synchronized (index) {
+            boolean isNewKey = (index.get(key) == null);
+            if (isNewKey) {
+                long maxBytes = config.getMaxKeyMemoryMb() * 1024L * 1024L;
+                long currentBytes = index.getActiveKeysMemoryBytes();
+                if (currentBytes + key.length > maxBytes) {
+                    throw new VulcanoKeyMemoryLimitExceededException(
+                        "Key memory limit exceeded. Configured: " + maxBytes + " bytes, Current: " + currentBytes + " bytes, Attempted key size: " + key.length + " bytes.",
+                        currentBytes,
+                        maxBytes,
+                        key.length
+                    );
+                }
+            }
             BinaryRecord record = new BinaryRecord(System.currentTimeMillis(), key, value, 0);
             StorageEngine.WriteResult res = storageEngine.write(record);
             index.put(key, res.fileId(), res.valueSize(), res.valueOffset(), res.keyOffset(), res.timestamp());

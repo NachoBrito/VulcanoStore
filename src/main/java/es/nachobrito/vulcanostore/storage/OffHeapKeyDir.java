@@ -3,6 +3,7 @@ package es.nachobrito.vulcanostore.storage;
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
+import es.nachobrito.vulcanostore.VulcanoKeyMemoryLimitExceededException;
 
 /**
  * High-performance, zero-GC, off-heap index for VulcanoStore keys.
@@ -129,6 +130,8 @@ public class OffHeapKeyDir implements AutoCloseable {
      */
     private static final long AVERAGE_KEY_SIZE_PADDING = 128;
 
+    private final long maxKeyMemoryMb;
+    private final long maxKeyMemoryBytes;
     private final long expectedKeys;
     private final long totalSlots;
     private final Arena arena;
@@ -138,24 +141,47 @@ public class OffHeapKeyDir implements AutoCloseable {
     
     private long keysWriteOffset = 0;
     private int uniqueKeyCount = 0;
+    private long activeKeysMemoryBytes = 0;
 
     /**
-     * Instantiates the off-heap index, pre-allocating memory for the safe load capacity.
+     * Instantiates the off-heap index, pre-allocating memory for the safe load capacity based on max key memory.
      *
-     * @param expectedKeys the expected number of unique keys to index.
+     * @param maxKeyMemoryMb the maximum off-heap memory for keys in MB.
      */
-    public OffHeapKeyDir(long expectedKeys) {
-        if (expectedKeys <= 0) {
-            throw new IllegalArgumentException("Expected keys capacity must be positive");
+    public OffHeapKeyDir(long maxKeyMemoryMb) {
+        if (maxKeyMemoryMb <= 0) {
+            throw new IllegalArgumentException("Maximum key memory must be positive");
         }
-        this.expectedKeys = expectedKeys;
+        this.maxKeyMemoryMb = maxKeyMemoryMb;
+        this.maxKeyMemoryBytes = maxKeyMemoryMb * 1024L * 1024L;
+        
+        // Calculate safe expectedKeys using a conservative 24-byte key size estimate for slots
+        this.expectedKeys = maxKeyMemoryBytes / 24;
         this.totalSlots = (long) (expectedKeys / LOAD_FACTOR);
         this.arena = Arena.ofShared();
         
         long slotsBytes = totalSlots * SLOT_SIZE;
         this.segment = arena.allocate(slotsBytes);
         this.offHeapOffsetsSegment = arena.allocate(totalSlots * LONG_SIZE_IN_BYTES);
-        this.keysSegment = arena.allocate(expectedKeys * AVERAGE_KEY_SIZE_PADDING);
+        this.keysSegment = arena.allocate(maxKeyMemoryBytes);
+    }
+
+    /**
+     * Returns the configured maximum key memory in MB.
+     *
+     * @return maximum key memory in MB.
+     */
+    public long getMaxKeyMemoryMb() {
+        return maxKeyMemoryMb;
+    }
+
+    /**
+     * Returns the total memory currently occupied by unique active keys in bytes.
+     *
+     * @return active keys memory in bytes.
+     */
+    public long getActiveKeysMemoryBytes() {
+        return activeKeysMemoryBytes;
     }
 
     private void checkClosed() {
@@ -302,8 +328,16 @@ public class OffHeapKeyDir implements AutoCloseable {
             segment.set(ValueLayout.JAVA_LONG, existingSlotOffset + TS_OFFSET, timestamp);
         } else {
             // Insert new key
+            if (activeKeysMemoryBytes + key.length > maxKeyMemoryBytes) {
+                throw new VulcanoKeyMemoryLimitExceededException(
+                    "Database key memory limit exceeded. Configured limit: " + maxKeyMemoryBytes + " bytes, attempted to add key of size: " + key.length + " bytes, current usage: " + activeKeysMemoryBytes + " bytes.",
+                    activeKeysMemoryBytes,
+                    maxKeyMemoryBytes,
+                    key.length
+                );
+            }
             if (uniqueKeyCount >= expectedKeys) {
-                throw new IllegalStateException("Database index capacity exceeded. Expected key limit of " + expectedKeys + " reached.");
+                throw new IllegalStateException("Database index capacity exceeded. Expected key limit reached.");
             }
 
             long insertSlotOffset = findInsertionSlotOffset(key, h);
@@ -333,6 +367,7 @@ public class OffHeapKeyDir implements AutoCloseable {
             segment.set(ValueLayout.JAVA_SHORT, insertSlotOffset + KEY_SIZE_OFFSET, (short) key.length);
 
             uniqueKeyCount++;
+            activeKeysMemoryBytes += key.length;
         }
     }
 
@@ -383,10 +418,13 @@ public class OffHeapKeyDir implements AutoCloseable {
             return false;
         }
 
+        int keySize = segment.get(ValueLayout.JAVA_SHORT, slotOffset + KEY_SIZE_OFFSET) & 0xFFFF;
+
         // Write tombstone hash to preserve collision lookup chains
         segment.set(ValueLayout.JAVA_LONG, slotOffset + HASH_OFFSET, TOMBSTONE_HASH);
         
         uniqueKeyCount--;
+        activeKeysMemoryBytes -= keySize;
         return true;
     }
 

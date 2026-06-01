@@ -123,25 +123,29 @@ To scale beyond millions of keys without hitting Garbage Collection limits or po
 * **Zero-GC Overhead:** Because the index is off-heap, it is entirely invisible to the JVM Garbage Collector, eliminating the multi-second "Stop-the-World" pauses that occur when tracing standard Java heap maps (`HashMap<String, KeyEntry>`) containing tens of millions of objects.
 * **Cache-Local Linear Probing:** Uses a flat open-addressed hash map structure. Linear probing guarantees that colliding records are stored sequentially in adjacent memory slots, fully capitalizing on CPU L1/L2 data prefetching.
 
-### 3.3. Static Sizing & `expectedKeys` Rationale
+### 3.3. Static Sizing & `maxKeyMemoryMb` Rationale
 In open-addressed hash tables, dynamic resizing (reallocating a larger off-heap block and copying/re-hashing all active slots) is extremely costly and introduces sudden, massive latency spikes. 
 
-To maintain strict sub-millisecond point write guarantees, VulcanoStore utilizes a **static, pre-sized off-heap layout** based on the configured `expectedKeys` capacity:
-*   **Formula:** `Total Memory = (expectedKeys / Load Factor) * 42 bytes`
-*   **Load Factor Threshold:** Enforces a conservative **Load Factor of 0.7** to minimize hash collisions and search times.
-*   **Example (Default Config):** For the default capacity of `expectedKeys = 10,000,000`, VulcanoStore allocates exactly:
-    $$\text{Total Slots} = \frac{10,000,000}{0.7} = 14,285,714 \text{ slots}$$
-    $$\text{Total Bytes} = 14,285,714 \text{ slots} \times 42 \text{ bytes} \approx 600,000,000 \text{ bytes} \ (\sim 572 \text{ MB})$$
-    of native off-heap memory on startup.
+To maintain strict sub-millisecond point write guarantees, VulcanoStore utilizes a **static, pre-sized off-heap layout** based on the configured key memory limit (`maxKeyMemoryMb`):
+*   **Physical Key Buffer Allocation:** The flat `keysSegment` (storing the raw key bytes) is allocated with exactly `maxKeyMemoryMb` MB in bytes:
+    $$\text{maxKeyMemoryBytes} = \text{maxKeyMemoryMb} \times 1024 \times 1024 \text{ bytes}$$
+*   **Slots Allocation Sizing Formula:** To determine the safe number of open-addressing slots, the engine assumes a realistic average key size of **24 bytes** to calculate target capacity:
+    $$\text{expectedKeys} = \frac{\text{maxKeyMemoryBytes}}{24}$$
+    $$\text{Total Slots} = \frac{\text{expectedKeys}}{\text{Load Factor}} = \frac{\text{expectedKeys}}{0.7}$$
+*   **Example (Default Config - 128 MB):** For the default capacity of `maxKeyMemoryMb = 128`, VulcanoStore allocates exactly:
+    $$\text{maxKeyMemoryBytes} = 128 \times 1024 \times 1024 = 134,217,728 \text{ bytes}$$
+    $$\text{expectedKeys} = \frac{134,217,728}{24} = 5,592,405 \text{ keys}$$
+    $$\text{Total Slots} = \frac{5,592,405}{0.7} = 7,989,150 \text{ slots}$$
+    which translates to $\sim 365$ MB of off-heap slots segment memory on startup.
 
 This design decision guarantees a highly predictable memory footprint, zero runtime resizing overhead, and perfectly flat latency profiles throughout the lifecycle of the database.
 
-### 3.4. Capacity Exhaustion Safety Boundaries
-Because the off-heap mapping uses a fixed-size slot array under open-addressing, approaching a 100% load factor would trigger massive collision chains and dangerous infinite search loops. To guarantee production reliability, VulcanoStore enforces a **strict safety boundary**:
-1.  **Unique Key Tracking:** The storage engine maintains an internal count of currently indexed unique keys.
-2.  **Exhaustion Limit:** The maximum number of allowed unique keys is capped exactly at the configured `expectedKeys` capacity (corresponding to the safe **0.7 load factor** limit).
-3.  **New Key Rejection:** If the unique key limit is reached, calling `put` with a **new key** (not already present in `KeyDir`) will immediately throw an `IllegalStateException` (e.g., `"Database index capacity exceeded. Capped at X keys."`).
-4.  **Existing Key Overwrites Permitted:** Updates to **existing keys** remain fully functional and succeed even when the capacity is reached, because they reuse their existing pre-allocated slot in the `MemorySegment` and do not consume additional off-heap memory.
+### 3.4. Key Memory Limit Exhaustion Safety Boundaries
+Because the off-heap mapping uses a fixed-size slot array under open-addressing and a physical contiguous key bytes segment, approaching a 100% capacity would trigger dangerous memory overflows or massive collision chains. To guarantee production reliability, VulcanoStore enforces a **strict safety boundary**:
+1.  **Memory Usage Tracking:** The database dynamically tracks the sum of lengths of active unique keys in bytes (`activeKeysMemoryBytes`).
+2.  **Granular Rejections:** If calling `put` with a **new key** (not already present in the index) would push `activeKeysMemoryBytes + key.length` beyond `maxKeyMemoryBytes`, it throws a custom `VulcanoKeyMemoryLimitExceededException` (which extends `IllegalStateException`).
+3.  **Existing Key Overwrites Permitted:** Updates to **existing keys** remain fully functional and succeed even when the capacity is reached, because they overwrite their existing slot and do not consume additional memory in the off-heap index.
+4.  **Memory Reclamation on Deletions**: Calling `delete` on an active key removes it from the index and immediately reclaims its key byte size, freeing up capacity for subsequent new key insertions.
 
 ---
 

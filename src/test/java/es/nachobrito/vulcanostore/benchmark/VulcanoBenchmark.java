@@ -34,7 +34,7 @@ public class VulcanoBenchmark {
             VulcanoConfig config = VulcanoConfig.builder()
                     .dbPath(tempDir)
                     .segmentSize(128 * 1024 * 1024) // 128MB
-                    .expectedKeys(250_000)
+                    .maxKeyMemoryMb(64)
                     .build();
 
             System.out.println("Database Directory: " + tempDir.toAbsolutePath());

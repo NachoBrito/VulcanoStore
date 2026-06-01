@@ -21,7 +21,7 @@ public class StorageEngineTest {
         VulcanoConfig config = VulcanoConfig.builder()
                 .dbPath(tempDir)
                 .segmentSize(50)
-                .expectedKeys(100)
+                .maxKeyMemoryMb(4)
                 .build();
 
         try (StorageEngine engine = new StorageEngine(config)) {
@@ -61,7 +61,7 @@ public class StorageEngineTest {
         VulcanoConfig config = VulcanoConfig.builder()
                 .dbPath(tempDir)
                 .segmentSize(1024 * 1024) // 1MB segment size
-                .expectedKeys(100)
+                .maxKeyMemoryMb(4)
                 .build();
 
         // 1. Initialize engine, write sequential records including a deletion tombstone, and close
@@ -76,7 +76,7 @@ public class StorageEngineTest {
         }
 
         // 2. Open a fresh index and fresh engine instance on the same dbPath
-        try (OffHeapKeyDir index = new OffHeapKeyDir(100);
+        try (OffHeapKeyDir index = new OffHeapKeyDir(4);
              StorageEngine engine = new StorageEngine(config)) {
 
             // Reconstruct the index from the storage engine files
@@ -103,7 +103,7 @@ public class StorageEngineTest {
         VulcanoConfig config = VulcanoConfig.builder()
                 .dbPath(tempDir)
                 .segmentSize(50) // small segment size to force rollover
-                .expectedKeys(100)
+                .maxKeyMemoryMb(4)
                 .build();
 
         try (StorageEngine engine = new StorageEngine(config)) {
@@ -145,7 +145,7 @@ public class StorageEngineTest {
         VulcanoConfig config = VulcanoConfig.builder()
                 .dbPath(tempDir)
                 .segmentSize(1024 * 1024)
-                .expectedKeys(100)
+                .maxKeyMemoryMb(4)
                 .build();
 
         // 1. Write some keys and close the engine to produce data and hint files
@@ -169,7 +169,7 @@ public class StorageEngineTest {
         assertFalse(Files.exists(dataPath));
 
         // 2. Open a fresh index and recover
-        try (OffHeapKeyDir index = new OffHeapKeyDir(100);
+        try (OffHeapKeyDir index = new OffHeapKeyDir(4);
              StorageEngine engine = new StorageEngine(config)) {
 
             // Reconstruct the index solely from hint files
