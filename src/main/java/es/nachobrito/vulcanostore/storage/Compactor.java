@@ -1,3 +1,19 @@
+/*
+ *    Copyright 2025 Nacho Brito
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
 package es.nachobrito.vulcanostore.storage;
 
 import es.nachobrito.vulcanostore.VulcanoConfig;
@@ -50,13 +66,13 @@ public class Compactor implements AutoCloseable {
         java.util.List<Integer> inactiveFileIds;
         try (var stream = Files.list(dbPath)) {
             inactiveFileIds = stream
-                .filter(Files::isRegularFile)
-                .filter(p -> p.getFileName().toString().matches("\\d{8}\\.data"))
-                .map(p -> p.getFileName().toString().substring(0, 8))
-                .map(Integer::parseInt)
-                .filter(fileId -> fileId < activeFileId)
-                .sorted()
-                .toList();
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().matches("\\d{8}\\.data"))
+                    .map(p -> p.getFileName().toString().substring(0, 8))
+                    .map(Integer::parseInt)
+                    .filter(fileId -> fileId < activeFileId)
+                    .sorted()
+                    .toList();
         }
 
         if (inactiveFileIds.isEmpty()) {
@@ -98,7 +114,7 @@ public class Compactor implements AutoCloseable {
                         if (slot != null && slot.fileId() == fileId && slot.valueOffset() == offset) {
                             // Migrate the active record: write it to the active segment
                             StorageEngine.WriteResult res = storageEngine.write(record);
-                            
+
                             // Atomically update the index coordinates
                             synchronized (index) {
                                 index.put(key, res.fileId(), res.valueSize(), res.valueOffset(), res.keyOffset(), res.timestamp());

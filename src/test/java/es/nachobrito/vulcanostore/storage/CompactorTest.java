@@ -1,14 +1,27 @@
+/*
+ *    Copyright 2025 Nacho Brito
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
 package es.nachobrito.vulcanostore.storage;
 
-import es.nachobrito.vulcanostore.SyncStrategy;
 import es.nachobrito.vulcanostore.VulcanoConfig;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -38,10 +51,10 @@ public class CompactorTest {
             // Segment 1: k1 -> v1, k2 -> v2 (stale)
             BinaryRecord rec1 = new BinaryRecord(1000L, "k1".getBytes(), "v1".getBytes(), 0);
             BinaryRecord rec2 = new BinaryRecord(1001L, "k2".getBytes(), "v2".getBytes(), 0);
-            
+
             StorageEngine.WriteResult res1 = engine.write(rec1);
             index.put(rec1.key(), res1.fileId(), res1.valueSize(), res1.valueOffset(), res1.keyOffset(), res1.timestamp());
-            
+
             StorageEngine.WriteResult res2 = engine.write(rec2);
             index.put(rec2.key(), res2.fileId(), res2.valueSize(), res2.valueOffset(), res2.keyOffset(), res2.timestamp());
 
@@ -51,7 +64,7 @@ public class CompactorTest {
 
             StorageEngine.WriteResult res3 = engine.write(rec3);
             index.put(rec3.key(), res3.fileId(), res3.valueSize(), res3.valueOffset(), res3.keyOffset(), res3.timestamp());
-            
+
             StorageEngine.WriteResult res4 = engine.write(rec4);
             index.put(rec4.key(), res4.fileId(), res4.valueSize(), res4.valueOffset(), res4.keyOffset(), res4.timestamp());
 

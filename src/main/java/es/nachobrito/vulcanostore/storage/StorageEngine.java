@@ -1,3 +1,19 @@
+/*
+ *    Copyright 2025 Nacho Brito
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
 package es.nachobrito.vulcanostore.storage;
 
 import es.nachobrito.vulcanostore.VulcanoConfig;
@@ -23,16 +39,17 @@ public class StorageEngine implements AutoCloseable {
      * Represents the exact byte offset coordinate mapping returned upon successful writes.
      */
     public record WriteResult(
-        int fileId,
-        int valueSize,
-        long valueOffset,
-        long keyOffset,
-        long timestamp
-    ) {}
+            int fileId,
+            int valueSize,
+            long valueOffset,
+            long keyOffset,
+            long timestamp
+    ) {
+    }
 
     private final VulcanoConfig config;
     private final Map<Integer, FileSegment> inactiveSegments;
-    
+
     private int activeFileId;
     private FileSegment activeSegment;
 
@@ -58,12 +75,12 @@ public class StorageEngine implements AutoCloseable {
         int maxFileId = 0;
         try (var stream = Files.list(dbPath)) {
             var files = stream
-                .filter(Files::isRegularFile)
-                .filter(p -> p.getFileName().toString().matches("\\d{8}\\.(data|hint)"))
-                .map(p -> p.getFileName().toString().substring(0, 8))
-                .map(Integer::parseInt)
-                .sorted()
-                .toList();
+                    .filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().matches("\\d{8}\\.(data|hint)"))
+                    .map(p -> p.getFileName().toString().substring(0, 8))
+                    .map(Integer::parseInt)
+                    .sorted()
+                    .toList();
 
             if (!files.isEmpty()) {
                 maxFileId = files.get(files.size() - 1);
@@ -102,7 +119,7 @@ public class StorageEngine implements AutoCloseable {
 
             // Write hint file for the closed active segment
             writeHintFile(activeSegment.getFilePath());
-            
+
             // Map the closed segment as inactive
             inactiveSegments.put(activeFileId, new FileSegment(activeFileId, activeSegment.getFilePath(), config.getSegmentSize()));
 
@@ -121,11 +138,11 @@ public class StorageEngine implements AutoCloseable {
         long valueOffset = offset; // In Bitcask, the index valueOffset points to the start of the record
 
         return new WriteResult(
-            activeFileId,
-            valLen,
-            valueOffset,
-            keyOffset,
-            record.timestamp()
+                activeFileId,
+                valLen,
+                valueOffset,
+                keyOffset,
+                record.timestamp()
         );
     }
 
