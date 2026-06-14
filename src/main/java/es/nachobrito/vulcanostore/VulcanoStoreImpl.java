@@ -1,3 +1,19 @@
+/*
+ *    Copyright 2025 Nacho Brito
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
 package es.nachobrito.vulcanostore;
 
 import es.nachobrito.vulcanostore.storage.BinaryRecord;
@@ -6,6 +22,7 @@ import es.nachobrito.vulcanostore.storage.OffHeapKeyDir;
 import es.nachobrito.vulcanostore.storage.StorageEngine;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -34,7 +51,7 @@ public class VulcanoStoreImpl implements VulcanoStore {
         try {
             this.index = new OffHeapKeyDir(config.getMaxKeyMemoryMb());
             this.storageEngine = new StorageEngine(config);
-            
+
             // Recover index state from disk logs on boot
             this.storageEngine.recover(index);
 
@@ -62,10 +79,10 @@ public class VulcanoStoreImpl implements VulcanoStore {
                 long currentBytes = index.getActiveKeysMemoryBytes();
                 if (currentBytes + key.length > maxBytes) {
                     throw new VulcanoKeyMemoryLimitExceededException(
-                        "Key memory limit exceeded. Configured: " + maxBytes + " bytes, Current: " + currentBytes + " bytes, Attempted key size: " + key.length + " bytes.",
-                        currentBytes,
-                        maxBytes,
-                        key.length
+                            "Key memory limit exceeded. Configured: " + maxBytes + " bytes, Current: " + currentBytes + " bytes, Attempted key size: " + key.length + " bytes.",
+                            currentBytes,
+                            maxBytes,
+                            key.length
                     );
                 }
             }
@@ -142,11 +159,16 @@ public class VulcanoStoreImpl implements VulcanoStore {
                         storageEngine.close();
                     }
                 } finally {
-                    if (index != null) {
-                        index.close();
-                    }
+                    index.close();
                 }
             }
+        }
+    }
+
+    @Override
+    public List<byte[]> keys() throws IOException {
+        synchronized (index) {
+            return index.getAllKeys();
         }
     }
 }

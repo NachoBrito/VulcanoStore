@@ -169,3 +169,15 @@ We will replace expected key count capacities with a physical off-heap key memor
 > 4. Structured the `OffHeapKeyDir` index slots count assuming a realistic 24-byte key size estimate, ensuring the physical key memory limit is reached before slot capacity saturation.
 > 5. Verified that deleting active keys reclaims their memory allocation space, enabling subsequent new insertions.
 > 6. All 31 tests compile and execute cleanly with 100% success.
+
+---
+
+## 📋 Phase 10: Keys Iteration API Coverage
+We will add test coverage for retrieval of all stored keys in the database.
+
+* [x] **Task 10.1: Add unit and integration tests for keys iteration**
+  * *Green:* Verify that `getAllKeys` in the off-heap index and `keys` in `VulcanoStore` retrieve all active keys under empty, lifecycle (updates, overwrites, deletions), and cold-boot recovery states.
+
+> [!NOTE]
+> **Phase 10 Execution Report:** Added unit and integration tests covering the `keys()` API. Added `testGetAllKeys()` to `OffHeapKeyDirTest.java` and `testKeysEmpty()`, `testKeysLifecycle()`, and `testKeysRecovery()` to `VulcanoStoreTest.java`. Verified that all 35 tests compiled under Java 25 targets and successfully passed.
+

@@ -1,9 +1,27 @@
+/*
+ *    Copyright 2025 Nacho Brito
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
 package es.nachobrito.vulcanostore.storage;
+
+import es.nachobrito.vulcanostore.VulcanoKeyMemoryLimitExceededException;
 
 import java.lang.foreign.Arena;
 import java.lang.foreign.MemorySegment;
 import java.lang.foreign.ValueLayout;
-import es.nachobrito.vulcanostore.VulcanoKeyMemoryLimitExceededException;
+import java.util.List;
 
 /**
  * High-performance, zero-GC, off-heap index for VulcanoStore keys.
@@ -20,12 +38,13 @@ public class OffHeapKeyDir implements AutoCloseable {
      * Represents the indexing slot metadata retrieved for a given key.
      */
     public record Slot(
-        int fileId,
-        int valueSize,
-        long valueOffset,
-        long keyOffset,
-        long timestamp
-    ) {}
+            int fileId,
+            int valueSize,
+            long valueOffset,
+            long keyOffset,
+            long timestamp
+    ) {
+    }
 
     /**
      * The size of a single slot in bytes.
@@ -71,7 +90,7 @@ public class OffHeapKeyDir implements AutoCloseable {
      * Relative byte offset of the Key Size (2-byte short) within a slot.
      */
     private static final long KEY_SIZE_OFFSET = 40;
-    
+
     /**
      * Special hash value reserved to mark deleted (tombstone) slots.
      * <p>
@@ -121,15 +140,6 @@ public class OffHeapKeyDir implements AutoCloseable {
      */
     private static final long LONG_SIZE_IN_BYTES = 8;
 
-    /**
-     * Average byte size allocated per key to size the off-heap raw keys storage buffer.
-     * <p>
-     * Rationale: Assumes a generous average key size of 128 bytes (such as large UUIDs or
-     * long key strings) to ensure the contiguous raw keys memory segment does not overflow.
-     * </p>
-     */
-    private static final long AVERAGE_KEY_SIZE_PADDING = 128;
-
     private final long maxKeyMemoryMb;
     private final long maxKeyMemoryBytes;
     private final long expectedKeys;
@@ -138,7 +148,7 @@ public class OffHeapKeyDir implements AutoCloseable {
     private final MemorySegment segment; // Flat slot structures memory array
     private final MemorySegment offHeapOffsetsSegment; // Parallel array storing off-heap keyOffsets for each slot
     private final MemorySegment keysSegment; // Flat raw key bytes segment for in-memory comparisons
-    
+
     private long keysWriteOffset = 0;
     private int uniqueKeyCount = 0;
     private long activeKeysMemoryBytes = 0;
@@ -154,12 +164,12 @@ public class OffHeapKeyDir implements AutoCloseable {
         }
         this.maxKeyMemoryMb = maxKeyMemoryMb;
         this.maxKeyMemoryBytes = maxKeyMemoryMb * 1024L * 1024L;
-        
+
         // Calculate safe expectedKeys using a conservative 24-byte key size estimate for slots
         this.expectedKeys = maxKeyMemoryBytes / 24;
         this.totalSlots = (long) (expectedKeys / LOAD_FACTOR);
         this.arena = Arena.ofShared();
-        
+
         long slotsBytes = totalSlots * SLOT_SIZE;
         this.segment = arena.allocate(slotsBytes);
         this.offHeapOffsetsSegment = arena.allocate(totalSlots * LONG_SIZE_IN_BYTES);
@@ -238,7 +248,7 @@ public class OffHeapKeyDir implements AutoCloseable {
                 short storedKeySize = segment.get(ValueLayout.JAVA_SHORT, slotOffset + KEY_SIZE_OFFSET);
                 if (storedKeySize == key.length) {
                     long offHeapKeyOffset = offHeapOffsetsSegment.get(ValueLayout.JAVA_LONG, index * LONG_SIZE_IN_BYTES);
-                    
+
                     boolean match = true;
                     for (int i = 0; i < key.length; i++) {
                         byte b = keysSegment.get(ValueLayout.JAVA_BYTE, offHeapKeyOffset + i);
@@ -277,7 +287,7 @@ public class OffHeapKeyDir implements AutoCloseable {
                 short storedKeySize = segment.get(ValueLayout.JAVA_SHORT, slotOffset + KEY_SIZE_OFFSET);
                 if (storedKeySize == key.length) {
                     long offHeapKeyOffset = offHeapOffsetsSegment.get(ValueLayout.JAVA_LONG, index * LONG_SIZE_IN_BYTES);
-                    
+
                     boolean match = true;
                     for (int i = 0; i < key.length; i++) {
                         byte b = keysSegment.get(ValueLayout.JAVA_BYTE, offHeapKeyOffset + i);
@@ -315,7 +325,7 @@ public class OffHeapKeyDir implements AutoCloseable {
         if (key == null) {
             throw new IllegalArgumentException("Key cannot be null");
         }
-        
+
         long h = hash(key);
         long existingSlotOffset = findSlotOffset(key, h);
 
@@ -330,10 +340,10 @@ public class OffHeapKeyDir implements AutoCloseable {
             // Insert new key
             if (activeKeysMemoryBytes + key.length > maxKeyMemoryBytes) {
                 throw new VulcanoKeyMemoryLimitExceededException(
-                    "Database key memory limit exceeded. Configured limit: " + maxKeyMemoryBytes + " bytes, attempted to add key of size: " + key.length + " bytes, current usage: " + activeKeysMemoryBytes + " bytes.",
-                    activeKeysMemoryBytes,
-                    maxKeyMemoryBytes,
-                    key.length
+                        "Database key memory limit exceeded. Configured limit: " + maxKeyMemoryBytes + " bytes, attempted to add key of size: " + key.length + " bytes, current usage: " + activeKeysMemoryBytes + " bytes.",
+                        activeKeysMemoryBytes,
+                        maxKeyMemoryBytes,
+                        key.length
                 );
             }
             if (uniqueKeyCount >= expectedKeys) {
@@ -342,13 +352,13 @@ public class OffHeapKeyDir implements AutoCloseable {
 
             long insertSlotOffset = findInsertionSlotOffset(key, h);
             long slotIndex = insertSlotOffset / SLOT_SIZE;
-            
+
             // Append key to off-heap keys segment for in-memory resolution
             long kOffset = keysWriteOffset;
             if (kOffset + key.length > keysSegment.byteSize()) {
                 throw new IllegalStateException("Off-heap keys storage buffer exceeded");
             }
-            
+
             for (int i = 0; i < key.length; i++) {
                 keysSegment.set(ValueLayout.JAVA_BYTE, kOffset + i, key[i]);
             }
@@ -422,10 +432,37 @@ public class OffHeapKeyDir implements AutoCloseable {
 
         // Write tombstone hash to preserve collision lookup chains
         segment.set(ValueLayout.JAVA_LONG, slotOffset + HASH_OFFSET, TOMBSTONE_HASH);
-        
+
         uniqueKeyCount--;
         activeKeysMemoryBytes -= keySize;
         return true;
+    }
+
+    /**
+     * Retrieve all keys by scanning all flat slots segment
+     *
+     * @return a list of all the stored keys
+     */
+    public List<byte[]> getAllKeys() {
+        checkClosed();
+        List<byte[]> keys = new java.util.ArrayList<>();
+        for (long slotIndex = 0; slotIndex < totalSlots; slotIndex++) {
+            long slotOffset = slotIndex * SLOT_SIZE;
+            long storedHash = segment.get(ValueLayout.JAVA_LONG, slotOffset + HASH_OFFSET);
+
+            // Skip empty and tombstone slots
+            if (storedHash != 0L && storedHash != TOMBSTONE_HASH) {
+                short storedKeySize = segment.get(ValueLayout.JAVA_SHORT, slotOffset + KEY_SIZE_OFFSET);
+                long offHeapKeyOffset = offHeapOffsetsSegment.get(ValueLayout.JAVA_LONG, slotIndex * LONG_SIZE_IN_BYTES);
+
+                byte[] keyBytes = new byte[storedKeySize];
+                for (int i = 0; i < storedKeySize; i++) {
+                    keyBytes[i] = keysSegment.get(ValueLayout.JAVA_BYTE, offHeapKeyOffset + i);
+                }
+                keys.add(keyBytes);
+            }
+        }
+        return keys;
     }
 
     /**

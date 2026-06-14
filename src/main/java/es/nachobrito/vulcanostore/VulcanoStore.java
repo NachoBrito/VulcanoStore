@@ -17,6 +17,7 @@
 package es.nachobrito.vulcanostore;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -147,4 +148,12 @@ public interface VulcanoStore extends AutoCloseable {
      */
     @Override
     void close() throws IOException;
+
+    /**
+     * Returns all keys stored
+     *
+     * @return a List with all keys stored
+     * @throws IOException if a low-level disk I/O error occurs while reading
+     */
+    List<byte[]> keys() throws IOException;
 }
