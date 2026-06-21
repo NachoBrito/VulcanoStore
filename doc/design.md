@@ -129,14 +129,14 @@ In open-addressed hash tables, dynamic resizing (reallocating a larger off-heap 
 To maintain strict sub-millisecond point write guarantees, VulcanoStore utilizes a **static, pre-sized off-heap layout** based on the configured key memory limit (`maxKeyMemoryMb`):
 *   **Physical Key Buffer Allocation:** The flat `keysSegment` (storing the raw key bytes) is allocated with exactly `maxKeyMemoryMb` MB in bytes:
     $$\text{maxKeyMemoryBytes} = \text{maxKeyMemoryMb} \times 1024 \times 1024 \text{ bytes}$$
-*   **Slots Allocation Sizing Formula:** To determine the safe number of open-addressing slots, the engine assumes a realistic average key size of **24 bytes** to calculate target capacity:
-    $$\text{expectedKeys} = \frac{\text{maxKeyMemoryBytes}}{24}$$
+*   **Slots Allocation Sizing Formula:** To determine the safe number of open-addressing slots, the engine calculates target capacity using the configured `averageKeySize` in bytes (which defaults to **36 bytes**, representing the length of a canonical UUID string, but can be customized or defaults to 24 bytes for direct/legacy index instances):
+    $$\text{expectedKeys} = \frac{\text{maxKeyMemoryBytes}}{\text{averageKeySize}}$$
     $$\text{Total Slots} = \frac{\text{expectedKeys}}{\text{Load Factor}} = \frac{\text{expectedKeys}}{0.7}$$
-*   **Example (Default Config - 128 MB):** For the default capacity of `maxKeyMemoryMb = 128`, VulcanoStore allocates exactly:
+*   **Example (Default Config - 128 MB and 36-byte average key size):** For the default capacity of `maxKeyMemoryMb = 128` and `averageKeySize = 36` (UUID length), VulcanoStore allocates exactly:
     $$\text{maxKeyMemoryBytes} = 128 \times 1024 \times 1024 = 134,217,728 \text{ bytes}$$
-    $$\text{expectedKeys} = \frac{134,217,728}{24} = 5,592,405 \text{ keys}$$
-    $$\text{Total Slots} = \frac{5,592,405}{0.7} = 7,989,150 \text{ slots}$$
-    which translates to $\sim 365$ MB of off-heap slots segment memory on startup.
+    $$\text{expectedKeys} = \frac{134,217,728}{36} = 3,728,270 \text{ keys}$$
+    $$\text{Total Slots} = \frac{3,728,270}{0.7} = 5,326,100 \text{ slots}$$
+    which translates to $\sim 243.8$ MB of off-heap slots segment memory on startup (a $\sim 33\%$ reduction compared to the legacy 24-byte default of $\sim 365$ MB).
 
 This design decision guarantees a highly predictable memory footprint, zero runtime resizing overhead, and perfectly flat latency profiles throughout the lifecycle of the database.
 

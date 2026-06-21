@@ -159,14 +159,28 @@ public class OffHeapKeyDir implements AutoCloseable {
      * @param maxKeyMemoryMb the maximum off-heap memory for keys in MB.
      */
     public OffHeapKeyDir(long maxKeyMemoryMb) {
+        this(maxKeyMemoryMb, 24); // Fallback to conservative 24-byte default for backwards compatibility
+    }
+
+    /**
+     * Instantiates the off-heap index, pre-allocating memory for the safe load capacity based on max key memory
+     * and a specific expected average key size.
+     *
+     * @param maxKeyMemoryMb the maximum off-heap memory for keys in MB.
+     * @param averageKeySize the expected average key size in bytes.
+     */
+    public OffHeapKeyDir(long maxKeyMemoryMb, int averageKeySize) {
         if (maxKeyMemoryMb <= 0) {
             throw new IllegalArgumentException("Maximum key memory must be positive");
+        }
+        if (averageKeySize <= 0) {
+            throw new IllegalArgumentException("Average key size must be positive");
         }
         this.maxKeyMemoryMb = maxKeyMemoryMb;
         this.maxKeyMemoryBytes = maxKeyMemoryMb * 1024L * 1024L;
 
-        // Calculate safe expectedKeys using a conservative 24-byte key size estimate for slots
-        this.expectedKeys = maxKeyMemoryBytes / 24;
+        // Calculate safe expectedKeys using the provided average key size
+        this.expectedKeys = maxKeyMemoryBytes / averageKeySize;
         this.totalSlots = (long) (expectedKeys / LOAD_FACTOR);
         this.arena = Arena.ofShared();
 

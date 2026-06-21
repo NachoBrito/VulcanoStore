@@ -173,5 +173,14 @@ public class OffHeapKeyDirTest {
             assertTrue(foundKey3);
         }
     }
+
+    @Test
+    public void testCustomAverageKeySizeConstructor() {
+        try (OffHeapKeyDir keyDir = new OffHeapKeyDir(1, 100)) {
+            byte[] key = "test-key".getBytes();
+            keyDir.put(key, 1, 100, 2048, 1024, 999999L);
+            assertNotNull(keyDir.get(key));
+        }
+    }
 }
 

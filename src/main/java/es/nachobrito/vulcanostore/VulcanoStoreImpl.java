@@ -49,7 +49,7 @@ public class VulcanoStoreImpl implements VulcanoStore {
         }
         this.config = config;
         try {
-            this.index = new OffHeapKeyDir(config.getMaxKeyMemoryMb());
+            this.index = new OffHeapKeyDir(config.getMaxKeyMemoryMb(), config.getAverageKeySize());
             this.storageEngine = new StorageEngine(config);
 
             // Recover index state from disk logs on boot

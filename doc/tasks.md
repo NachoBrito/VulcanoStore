@@ -181,3 +181,26 @@ We will add test coverage for retrieval of all stored keys in the database.
 > [!NOTE]
 > **Phase 10 Execution Report:** Added unit and integration tests covering the `keys()` API. Added `testGetAllKeys()` to `OffHeapKeyDirTest.java` and `testKeysEmpty()`, `testKeysLifecycle()`, and `testKeysRecovery()` to `VulcanoStoreTest.java`. Verified that all 35 tests compiled under Java 25 targets and successfully passed.
 
+---
+
+## 📋 Phase 11: Dynamic Slot Sizing via averageKeySize Config
+We will introduce an `averageKeySize` configuration parameter to dynamically size the linear-probing index slots memory, reducing upfront off-heap allocation size.
+
+* [x] **Task 11.1: Write failing TDD tests for averageKeySize config**
+  * *Red:* Write unit tests in `VulcanoConfigTest.java` verifying that `averageKeySize` defaults to 36 (byte length of a UUID string) and must be positive.
+  * *Red:* Write unit tests in `OffHeapKeyDirTest.java` verifying the custom `averageKeySize` constructor.
+* [x] **Task 11.2: Implement configuration changes and integrate into index constructor**
+  * *Green:* Implement `averageKeySize` in `VulcanoConfig` with default 36.
+  * *Green:* Overload `OffHeapKeyDir` constructor to accept custom average key size and calculate slot capacity dynamically.
+  * *Green:* Wire `averageKeySize` from `VulcanoStoreImpl` configuration to `OffHeapKeyDir`.
+  * *Green:* Verify all 38 tests are fully compile-safe and green.
+
+> [!NOTE]
+> **Phase 11 Execution Report:** Completed TDD RED and GREEN phases for dynamic index slot sizing.
+> 1. Added `averageKeySize` parameter to `VulcanoConfig` defaulting to 36 bytes (the byte representation length of a canonical UUID string).
+> 2. Implemented validation to ensure `averageKeySize` must be positive.
+> 3. Overloaded the `OffHeapKeyDir` constructor to calculate expected slots dynamically based on the configured key memory limit and average key size, defaulting to 24 for backward compatibility.
+> 4. Wired the configuration parameters in `VulcanoStoreImpl` to build the index using `averageKeySize`, significantly reducing off-heap memory footprint when average key size is larger.
+> 5. Verified all 38 tests successfully pass.
+
+

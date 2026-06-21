@@ -120,4 +120,32 @@ public class VulcanoConfigTest {
                     .build();
         });
     }
+
+    @Test
+    public void testAverageKeySizeDefaultValue() {
+        Path tempPath = Paths.get("/tmp/vulcanodb-test");
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempPath)
+                .build();
+        assertEquals(36, config.getAverageKeySize());
+    }
+
+    @Test
+    public void testAverageKeySizeMustBePositive() {
+        Path tempPath = Paths.get("/tmp/vulcanodb-test");
+        assertThrows(IllegalArgumentException.class, () -> {
+            VulcanoConfig.builder()
+                    .dbPath(tempPath)
+                    .averageKeySize(0)
+                    .build();
+        });
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            VulcanoConfig.builder()
+                    .dbPath(tempPath)
+                    .averageKeySize(-5)
+                    .build();
+        });
+    }
 }
+

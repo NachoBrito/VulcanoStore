@@ -68,12 +68,18 @@ public class VulcanoConfig {
      */
     private final long syncIntervalMs;
 
+    /**
+     * The expected average size of a key in bytes.
+     */
+    private final int averageKeySize;
+
     private VulcanoConfig(Builder builder) {
         this.dbPath = builder.dbPath;
         this.segmentSize = builder.segmentSize;
         this.maxKeyMemoryMb = builder.maxKeyMemoryMb;
         this.syncStrategy = builder.syncStrategy;
         this.syncIntervalMs = builder.syncIntervalMs;
+        this.averageKeySize = builder.averageKeySize;
     }
 
     /**
@@ -122,6 +128,15 @@ public class VulcanoConfig {
     }
 
     /**
+     * Returns the expected average key size in bytes.
+     *
+     * @return the average key size in bytes.
+     */
+    public int getAverageKeySize() {
+        return averageKeySize;
+    }
+
+    /**
      * Creates a new instance of the configuration {@link Builder}.
      *
      * @return a fresh {@link Builder} instance.
@@ -139,6 +154,7 @@ public class VulcanoConfig {
         private long maxKeyMemoryMb = 128;           // 128MB default
         private SyncStrategy syncStrategy = SyncStrategy.SYNC_INTERVAL;
         private long syncIntervalMs = 500;           // 500ms default
+        private int averageKeySize = 36;             // Default to length in bytes of UUID string (36 bytes)
 
         /**
          * Sets the directory path for database storage.
@@ -196,6 +212,17 @@ public class VulcanoConfig {
         }
 
         /**
+         * Sets the expected average key size in bytes.
+         *
+         * @param averageKeySize the average key size in bytes. Must be positive.
+         * @return this builder instance for method chaining.
+         */
+        public Builder averageKeySize(int averageKeySize) {
+            this.averageKeySize = averageKeySize;
+            return this;
+        }
+
+        /**
          * Assembles, validates, and returns a new {@link VulcanoConfig} instance.
          *
          * @return the validated {@link VulcanoConfig} object.
@@ -216,6 +243,9 @@ public class VulcanoConfig {
             }
             if (syncIntervalMs <= 0) {
                 throw new IllegalArgumentException("Sync interval in milliseconds must be positive");
+            }
+            if (averageKeySize <= 0) {
+                throw new IllegalArgumentException("Average key size must be positive");
             }
             return new VulcanoConfig(this);
         }
