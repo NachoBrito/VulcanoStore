@@ -47,20 +47,78 @@ public class VulcanoStoreImpl implements VulcanoStore {
         if (config == null) {
             throw new IllegalArgumentException("Configuration cannot be null");
         }
-        this.config = config;
+        this.config = resolveConfig(config);
         try {
-            this.index = new OffHeapKeyDir(config.getMaxKeyMemoryMb(), config.getAverageKeySize());
-            this.storageEngine = new StorageEngine(config);
+            this.index = new OffHeapKeyDir(this.config.getMaxKeyMemoryMb(), this.config.getAverageKeySize());
+            this.storageEngine = new StorageEngine(this.config);
 
             // Recover index state from disk logs on boot
             this.storageEngine.recover(index);
 
             // Initialize and start background compactor
-            this.compactor = new Compactor(config, storageEngine, index);
+            this.compactor = new Compactor(this.config, storageEngine, index);
             this.compactor.start();
         } catch (IOException e) {
             throw new RuntimeException("Failed to initialize VulcanoStore storage engine", e);
         }
+    }
+
+    private static VulcanoConfig resolveConfig(VulcanoConfig config) {
+        java.nio.file.Path dbPath = config.getDbPath();
+        java.nio.file.Path metadataPath = dbPath.resolve("vulcano.properties");
+
+        if (java.nio.file.Files.exists(metadataPath)) {
+            java.util.Properties props = new java.util.Properties();
+            try (java.io.InputStream in = java.nio.file.Files.newInputStream(metadataPath)) {
+                props.load(in);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to read metadata file: " + metadataPath, e);
+            }
+
+            long segmentSize = Long.parseLong(props.getProperty("segmentSize", String.valueOf(config.getSegmentSize())));
+            SyncStrategy syncStrategy = SyncStrategy.valueOf(props.getProperty("syncStrategy", config.getSyncStrategy().name()));
+            long syncIntervalMs = Long.parseLong(props.getProperty("syncIntervalMs", String.valueOf(config.getSyncIntervalMs())));
+            int averageKeySize = Integer.parseInt(props.getProperty("averageKeySize", String.valueOf(config.getAverageKeySize())));
+
+            return VulcanoConfig.builder()
+                    .dbPath(dbPath)
+                    .maxKeyMemoryMb(config.getMaxKeyMemoryMb())
+                    .segmentSize(segmentSize)
+                    .syncStrategy(syncStrategy)
+                    .syncIntervalMs(syncIntervalMs)
+                    .averageKeySize(averageKeySize)
+                    .build();
+        } else {
+            try {
+                java.nio.file.Files.createDirectories(dbPath);
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to create database directory: " + dbPath, e);
+            }
+
+            java.util.Properties props = new java.util.Properties();
+            props.setProperty("segmentSize", String.valueOf(config.getSegmentSize()));
+            props.setProperty("syncStrategy", config.getSyncStrategy().name());
+            props.setProperty("syncIntervalMs", String.valueOf(config.getSyncIntervalMs()));
+            props.setProperty("averageKeySize", String.valueOf(config.getAverageKeySize()));
+            props.setProperty("maxKeyMemoryMb", String.valueOf(config.getMaxKeyMemoryMb()));
+
+            try (java.io.OutputStream out = java.nio.file.Files.newOutputStream(metadataPath)) {
+                props.store(out, "VulcanoStore Database Configuration Metadata");
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to write metadata file: " + metadataPath, e);
+            }
+
+            return config;
+        }
+    }
+
+    /**
+     * Returns the resolved active database configuration.
+     *
+     * @return the active configuration.
+     */
+    public VulcanoConfig getConfig() {
+        return config;
     }
 
     @Override

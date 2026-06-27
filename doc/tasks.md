@@ -203,4 +203,23 @@ We will introduce an `averageKeySize` configuration parameter to dynamically siz
 > 4. Wired the configuration parameters in `VulcanoStoreImpl` to build the index using `averageKeySize`, significantly reducing off-heap memory footprint when average key size is larger.
 > 5. Verified all 38 tests successfully pass.
 
+---
+
+## 📋 Phase 12: Directory Metadata & Config Prevalence
+We will implement persistent configuration metadata within each database directory. This configuration will override provided configurations on boot, ensuring database directory parameter integrity across instances, with the exception of the `maxKeyMemoryMb` parameter.
+
+* [x] **Task 12.1: Write TDD integration tests for metadata file creation and prevalence**
+  * *Red:* Write unit/integration tests in `VulcanoStoreTest.java` verifying that `vulcano.properties` is created when starting on a new directory, and that its configuration parameters (excluding `maxKeyMemoryMb`) override any new instance configurations provided later.
+* [x] **Task 12.2: Implement metadata creation and loading prevalence**
+  * *Green:* Modify `VulcanoStoreImpl` to write `vulcano.properties` when it is not present in the data folder, and load and merge the properties (taking prevalence over provided configuration, except for `maxKeyMemoryMb`) when it exists.
+  * *Green:* Expose `getConfig()` in `VulcanoStoreImpl` for test assertions.
+  * *Green:* Verify all 40 tests compile and pass.
+
+> [!NOTE]
+> **Phase 12 Execution Report:** Completed TDD RED and GREEN phases for persistent database directory configuration metadata.
+> 1. Added integration tests to check that `vulcano.properties` configuration metadata is written to the database folder on first use, and is automatically loaded and merged (taking prevalence, except for `maxKeyMemoryMb`) when initializing subsequently.
+> 2. Implemented properties loading, validation, and writing inside `VulcanoStoreImpl.java` constructor via `resolveConfig()`.
+> 3. Exposed `getConfig()` on `VulcanoStoreImpl` to query the active configuration.
+> 4. Verified all 40 tests are successfully green.
+
 

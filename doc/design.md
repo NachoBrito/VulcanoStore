@@ -243,6 +243,16 @@ For rapid startup, the corresponding hint files use the following layout:
 +-------------------+-------------------+-------------------+-------------------+-------------------+
 ```
 
+### 7.3. Metadata File Format (`vulcano.properties`)
+To preserve directory configuration integrity across separate instances accessing the same database folder, a properties-based metadata file is created upon first database use. When subsequent instances are opened targeting the same directory, these persistent parameters take prevalence over the caller's configuration, with the exception of the `maxKeyMemoryMb` parameter.
+
+It contains the following properties:
+*   `segmentSize`: The maximum size of each individual data segment in bytes.
+*   `syncStrategy`: The memory-map page flushing strategy (e.g., `SYNC_INTERVAL`, `SYNC_ALWAYS`, `SYNC_NONE`).
+*   `syncIntervalMs`: The periodic page-flush interval in milliseconds.
+*   `averageKeySize`: The expected average size of a key in bytes.
+*   `maxKeyMemoryMb`: The maximum off-heap memory size allocated for unique active keys in MB (saved for reference but ignored on load, as the caller's provided configuration takes precedence).
+
 ---
 
 ## 8. Summary of Classes & Component Architecture

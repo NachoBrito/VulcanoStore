@@ -274,5 +274,76 @@ public class VulcanoStoreTest {
             assertTrue(foundK2);
         }
     }
+
+    @Test
+    public void testMetadataFileCreationOnNewDir(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig customConfig = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(512000)
+                .maxKeyMemoryMb(2)
+                .syncStrategy(SyncStrategy.SYNC_ALWAYS)
+                .syncIntervalMs(100)
+                .averageKeySize(50)
+                .build();
+
+        try (VulcanoStoreImpl store = new VulcanoStoreImpl(customConfig)) {
+            // Verify metadata file was created
+            Path metadataPath = tempDir.resolve("vulcano.properties");
+            assertTrue(java.nio.file.Files.exists(metadataPath), "Metadata file should be created");
+
+            // Read the properties and verify they match config
+            java.util.Properties props = new java.util.Properties();
+            try (java.io.InputStream in = java.nio.file.Files.newInputStream(metadataPath)) {
+                props.load(in);
+            }
+            assertEquals("512000", props.getProperty("segmentSize"));
+            assertEquals("SYNC_ALWAYS", props.getProperty("syncStrategy"));
+            assertEquals("100", props.getProperty("syncIntervalMs"));
+            assertEquals("50", props.getProperty("averageKeySize"));
+            assertEquals("2", props.getProperty("maxKeyMemoryMb"));
+        }
+    }
+
+    @Test
+    public void testMetadataPrevalenceOnExistingDir(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig firstConfig = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(512000)
+                .maxKeyMemoryMb(2)
+                .syncStrategy(SyncStrategy.SYNC_ALWAYS)
+                .syncIntervalMs(100)
+                .averageKeySize(50)
+                .build();
+
+        // 1. Initialize first instance to create the metadata file
+        try (VulcanoStoreImpl store1 = new VulcanoStoreImpl(firstConfig)) {
+            assertEquals(512000, store1.getConfig().getSegmentSize());
+            assertEquals(SyncStrategy.SYNC_ALWAYS, store1.getConfig().getSyncStrategy());
+            assertEquals(100, store1.getConfig().getSyncIntervalMs());
+            assertEquals(50, store1.getConfig().getAverageKeySize());
+            assertEquals(2, store1.getConfig().getMaxKeyMemoryMb());
+        }
+
+        // 2. Initialize second instance with different config options
+        VulcanoConfig secondConfig = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(1024 * 1024) // Differing
+                .maxKeyMemoryMb(10)       // Differing (max memory param)
+                .syncStrategy(SyncStrategy.SYNC_INTERVAL) // Differing
+                .syncIntervalMs(200)      // Differing
+                .averageKeySize(100)      // Differing
+                .build();
+
+        try (VulcanoStoreImpl store2 = new VulcanoStoreImpl(secondConfig)) {
+            // Check that loaded/prevailing config matches metadata parameters (from firstConfig)
+            assertEquals(512000, store2.getConfig().getSegmentSize());
+            assertEquals(SyncStrategy.SYNC_ALWAYS, store2.getConfig().getSyncStrategy());
+            assertEquals(100, store2.getConfig().getSyncIntervalMs());
+            assertEquals(50, store2.getConfig().getAverageKeySize());
+
+            // EXCEPT for the max memory param, which should take the one from secondConfig!
+            assertEquals(10, store2.getConfig().getMaxKeyMemoryMb());
+        }
+    }
 }
 
