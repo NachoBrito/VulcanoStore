@@ -88,10 +88,59 @@ public class StorageEngine implements AutoCloseable {
             }
         }
 
-        // Start active segment: if files exist, we start with maxFileId + 1. Otherwise start with 1.
-        this.activeFileId = maxFileId + 1;
-        Path activePath = dbPath.resolve(String.format("%08d.data", activeFileId));
-        this.activeSegment = new FileSegment(activeFileId, activePath, config.getSegmentSize());
+        // Start active segment:
+        if (config.isReadOnly()) {
+            if (maxFileId == 0) {
+                this.activeFileId = 0;
+                this.activeSegment = null;
+            } else {
+                this.activeFileId = maxFileId;
+                Path dataPath = dbPath.resolve(String.format("%08d.data", maxFileId));
+                if (Files.exists(dataPath)) {
+                    long size = Files.size(dataPath);
+                    if (size >= 22) {
+                        long currentOffset = scanWriteOffset(dataPath, maxFileId, size);
+                        this.activeSegment = new FileSegment(maxFileId, dataPath, size, true);
+                        this.activeSegment.setWriteOffset(currentOffset);
+                    } else {
+                        this.activeSegment = null;
+                    }
+                } else {
+                    this.activeSegment = null;
+                }
+            }
+        } else {
+            if (maxFileId == 0) {
+                this.activeFileId = 1;
+                Path activePath = dbPath.resolve(String.format("%08d.data", activeFileId));
+                this.activeSegment = new FileSegment(activeFileId, activePath, config.getSegmentSize());
+            } else {
+                Path dataPath = dbPath.resolve(String.format("%08d.data", maxFileId));
+                Path hintPath = dbPath.resolve(String.format("%08d.hint", maxFileId));
+
+                if (Files.exists(hintPath) || !Files.exists(dataPath)) {
+                    // Cleanly closed/finalized segment or data file missing; advance to maxFileId + 1
+                    this.activeFileId = maxFileId + 1;
+                    Path activePath = dbPath.resolve(String.format("%08d.data", activeFileId));
+                    this.activeSegment = new FileSegment(activeFileId, activePath, config.getSegmentSize());
+                } else {
+                    long capacity = Files.size(dataPath);
+                    long writeOffset = scanWriteOffset(dataPath, maxFileId, capacity);
+
+                    if (writeOffset + 22 < config.getSegmentSize()) {
+                        // Segment has space remaining: reuse maxFileId as the active segment!
+                        this.activeFileId = maxFileId;
+                        this.activeSegment = new FileSegment(activeFileId, dataPath, config.getSegmentSize());
+                        this.activeSegment.setWriteOffset(writeOffset);
+                    } else {
+                        // Segment is full: advance to maxFileId + 1
+                        this.activeFileId = maxFileId + 1;
+                        Path activePath = dbPath.resolve(String.format("%08d.data", activeFileId));
+                        this.activeSegment = new FileSegment(activeFileId, activePath, config.getSegmentSize());
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -102,6 +151,9 @@ public class StorageEngine implements AutoCloseable {
      * @throws IOException if a low-level write error occurs.
      */
     public WriteResult write(BinaryRecord record) throws IOException {
+        if (config.isReadOnly()) {
+            throw new UnsupportedOperationException("Cannot write in read-only mode");
+        }
         if (record == null) {
             throw new IllegalArgumentException("Record cannot be null");
         }
@@ -210,8 +262,10 @@ public class StorageEngine implements AutoCloseable {
             java.util.List<Integer> sortedFileIds = fileIds.stream().sorted().toList();
 
             for (int fileId : sortedFileIds) {
-                // Skip the current active segment file since it is newly initialized
-                if (fileId == activeFileId) {
+                if (fileId == activeFileId && activeSegment != null) {
+                    if (activeSegment.getWriteOffset() > 0) {
+                        recoverActiveSegment(index);
+                    }
                     continue;
                 }
 
@@ -297,6 +351,63 @@ public class StorageEngine implements AutoCloseable {
         }
     }
 
+    private void recoverActiveSegment(OffHeapKeyDir index) throws IOException {
+        long offset = 0;
+        long limit = activeSegment.getWriteOffset();
+        while (offset + 22 <= limit) {
+            try {
+                BinaryRecord record = activeSegment.read(offset);
+                if (record.timestamp() == 0 && record.key().length == 0) {
+                    break;
+                }
+
+                byte[] key = record.key();
+                int keyLen = key.length;
+                int valLen = record.isTombstone() ? 0 : record.value().length;
+                int totalSize = 22 + keyLen + valLen;
+
+                long keyOffset = offset + 22;
+                long valueOffset = offset;
+
+                if (record.isTombstone()) {
+                    index.remove(key);
+                } else {
+                    index.put(key, activeFileId, valLen, valueOffset, keyOffset, record.timestamp());
+                }
+
+                offset += totalSize;
+            } catch (Exception e) {
+                break;
+            }
+        }
+    }
+
+    private long scanWriteOffset(Path filePath, int fileId, long capacity) {
+        if (capacity < 22) {
+            return 0;
+        }
+        long offset = 0;
+        try (FileSegment segment = new FileSegment(fileId, filePath, capacity, true)) {
+            while (offset + 22 <= capacity) {
+                try {
+                    BinaryRecord record = segment.read(offset);
+                    if (record.timestamp() == 0 && record.key().length == 0) {
+                        break;
+                    }
+                    int keyLen = record.key().length;
+                    int valLen = record.isTombstone() ? 0 : record.value().length;
+                    int totalSize = 22 + keyLen + valLen;
+                    offset += totalSize;
+                } catch (Exception e) {
+                    break;
+                }
+            }
+        } catch (IOException e) {
+            return 0;
+        }
+        return offset;
+    }
+
     private void writeHintFile(Path dataFilePath) {
         String fileName = dataFilePath.getFileName().toString();
         Path hintFilePath = dataFilePath.getParent().resolve(fileName.replace(".data", ".hint"));
@@ -346,6 +457,20 @@ public class StorageEngine implements AutoCloseable {
     }
 
     /**
+     * Forces the current active segment buffer to physical disk.
+     */
+    public void forceActiveSegment() {
+        writeLock.lock();
+        try {
+            if (activeSegment != null) {
+                activeSegment.force();
+            }
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    /**
      * Returns the current active segment file ID.
      *
      * @return the active file ID.
@@ -367,6 +492,9 @@ public class StorageEngine implements AutoCloseable {
      * @throws IOException if a low-level filesystem or channel error occurs.
      */
     public void closeAndRemoveSegment(int fileId) throws IOException {
+        if (config.isReadOnly()) {
+            throw new UnsupportedOperationException("Cannot remove segments in read-only mode");
+        }
         writeLock.lock();
         try {
             FileSegment seg = inactiveSegments.remove(fileId);
@@ -393,8 +521,8 @@ public class StorageEngine implements AutoCloseable {
         try {
             if (activeSegment != null) {
                 activeSegment.close();
-                // Write hint file for final active segment on normal close if it contains data
-                if (activeSegment.getWriteOffset() > 0) {
+                // Write hint file for final active segment on normal close if it contains data and not in read-only mode
+                if (!config.isReadOnly() && activeSegment.getWriteOffset() > 0) {
                     writeHintFile(activeSegment.getFilePath());
                 }
             }

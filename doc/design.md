@@ -194,13 +194,14 @@ To make VulcanoStore production-quality and scale-resilient, the in-memory index
 
 ## 5. Consistency & Durability Guarantees
 
-Memory consistency is guaranteed the moment data is successfully written to the `MappedByteBuffer`. VulcanoStore leverages the OS virtual memory layer to achieve this efficiently:
+Memory consistency is guaranteed the moment data is successfully written to the `MappedByteBuffer`. VulcanoStore leverages the OS virtual memory layer and configurable synchronization strategies to achieve balanced performance and durability:
 
 1. **Application Crash Resilience:** Since data is written to a memory-mapped file (`MappedByteBuffer`), the data resides in the OS kernel's Page Cache. If the JVM process crashes or is forcefully killed (`kill -9`), the OS guarantees that the dirty memory pages are flushed to the disk. Zero data loss occurs upon application restarts.
 2. **Power Loss Resilience (Sync Configurations):**
-    * **`SYNC_ALWAYS` (Strict):** Calling `MappedByteBuffer.force()` after every `put` or `delete`. Highly durable, but throttled by disk write latencies.
-    * **`SYNC_INTERVAL` (Balanced):** A background thread periodically invokes `force()` (e.g., every 500ms or 1s). This provides a bound on data loss under sudden power failure while retaining high write throughput.
-    * **`SYNC_NONE` (Maximum Speed):** The OS decides when to flush pages (usually every 30 seconds). Maximum performance, zero system call overhead.
+    * **`SYNC_ALWAYS` (Strict):** Calling `storageEngine.forceActiveSegment()` (which invokes `MappedByteBuffer.force()`) immediately after every `put` or `delete`. Highly durable, but bound by disk write latencies.
+    * **`SYNC_INTERVAL` (Balanced):** A background daemon thread (`vulcanostore-flusher`) periodically invokes `forceActiveSegment()` on the active segment at the configured `syncIntervalMs` frequency (default: 500ms). This bounds potential data loss under abrupt hardware power failure while delivering near memory-speed write throughput.
+    * **`SYNC_NONE` (Maximum Speed):** The OS decides when to flush dirty virtual memory pages (typically every 30 seconds under Linux `dirty_writeback_centisecs`). Maximum write performance with zero disk synchronization system calls.
+3. **Graceful JVM Shutdown Hook:** `VulcanoStoreImpl` automatically registers a JVM shutdown hook (`Runtime.getRuntime().addShutdownHook`) upon startup. If the host application terminates or receives a SIGTERM signal without explicitly invoking `close()`, the shutdown hook triggers an orderly shutdown, forcing dirty pages to disk, finalizing active hint files, and closing native FFM memory arenas. When `close()` is called manually by the user, the shutdown hook is cleanly deregistered to avoid memory leaks.
 
 ---
 
@@ -214,25 +215,49 @@ Scanning multi-gigabyte data files sequentially on startup to rebuild the `KeyDi
 
 ### 6.2. Background Merge (Compactor)
 Append-only logs naturally accumulate stale data (e.g., old versions of updated keys or tombstone markers for deleted keys). VulcanoStore implements a robust, fault-tolerant **Background Merge Processor**:
-1. **Directory Scanning & Identification:** A background thread scans inactive data files (`fileId < activeFileId`).
-2. **Threshold-Based Compaction:**
-   * Scans each candidate segment and cross-references its records with the current active `KeyDir`.
-   * Calculates the number of stale/tombstone/overwritten records (`deadRecords`).
-   * **100% Active Segments Skipped:** If `deadRecords == 0`, the segment is completely skipped and preserved. This eliminates infinite compaction rollover loops where active data is endlessly re-migrated.
-3. **Safe Two-Pass Migration:**
+1. **Directory Scanning & Candidate Identification:** A background thread scans inactive data files (`fileId < activeFileId`).
+2. **Configurable Threshold-Based Compaction:**
+   * Scans each candidate segment using read-only `FileSegment` mappings and cross-references its records with the current active `KeyDir`.
+   * Counts valid migrated records, deleted tombstones, and dead records: $\text{totalRecords} = \text{activeRecords} + \text{deadRecords}$.
+   * **Threshold Skip Rule:** If $\text{totalRecords} == 0$ or $\frac{\text{deadRecords}}{\text{totalRecords}} < \text{compactionThreshold}$ (default: 0.20 or 20%), the segment is skipped. This prevents unnecessary I/O overhead on segments with minimal fragmentation.
+3. **Strict Deletion Safety Guard:**
+   * If $\text{activeRecords}$ is empty but $\text{totalRecords} > 0$ (e.g., during recovery failures or when the index does not contain expected keys), the compactor **never** deletes the segment unless it verifies that $100\%$ of the records are tombstones ($\text{tombstones} == \text{totalRecords}$). If non-tombstone records are present, the compactor aborts deletion, preserves the file on disk, and logs an `ERROR` to prevent irreversible data loss.
+4. **Safe Two-Pass Migration:**
    * If any error occurs reading a segment (e.g., truncated or corrupt file), the compactor logs the error via SLF4J (`org.slf4j.Logger`) and aborts compaction for that segment without deleting the source file.
-   * Migrates active records by writing them to disk.
+   * Migrates active records by writing them sequentially to disk.
    * Re-verifies under the index monitor (`synchronized(index)`) that the slot still points to the exact migrated segment and offset before swapping coordinates. If a user thread modified or deleted the key concurrently, the compactor leaves the newer entry intact.
-4. **Atomic Inactive Segment Removal:** The source `.data` and `.hint` files are removed from disk (`storageEngine.closeAndRemoveSegment(fileId)`) only after confirming 100% of all active records were successfully migrated and committed.
+5. **Atomic Inactive Segment Removal:** The source `.data` and `.hint` files are removed from disk (`storageEngine.closeAndRemoveSegment(fileId)`) only after confirming 100% of all active records were successfully migrated and committed.
 
 ---
 
 ### 6.3. Concurrency, Synchronization & Process Locking
-While VulcanoStore is primarily designed for high-performance single-worker or externally synchronized usage, concurrent background compaction requires internal thread safety:
+While VulcanoStore is primarily designed for high-performance single-worker or externally synchronized usage, concurrent background compaction and read-only multi-process access require internal safety:
 1. **Thread-Safe StorageEngine:** `StorageEngine.write(BinaryRecord)` is guarded by a `ReentrantLock`. Ingestion threads and the background compactor can append concurrently without offset interleaving, buffer overflow exceptions, or race conditions on segment rollover.
 2. **Atomic Index Swaps:** `OffHeapKeyDir` updates from compaction and point operations synchronize on the index instance monitor, ensuring readers never observe torn coordinates or stale file references.
-3. **Exclusive Process Lock (`vulcano.lock`):** Upon initialization, `VulcanoStoreImpl` acquires an exclusive file lock on `vulcano.lock` via `FileChannel.tryLock()`. This prevents multiple operating system processes or JVM instances from concurrently opening and corrupting the same database folder.
-4. **Lifecycle & Shutdown Ordering:** `VulcanoStoreImpl.close()` halts the background compactor and joins its worker thread first, outside of the index monitor. This prevents deadlocks between the compactor and closing threads, ensuring all background I/O operations terminate cleanly before `StorageEngine` channels and `OffHeapKeyDir` off-heap memory arenas are deallocated.
+3. **Multi-Process & Intra-JVM Directory Locking (`vulcano.lock`):**
+   * **Read-Write Instances:** Acquire an exclusive file lock (`tryLock(0, Long.MAX_VALUE, false)`) on `vulcano.lock`. Only one read-write instance can access a database directory at any time across processes and JVMs.
+   * **Read-Only Instances:** Acquire a shared file lock (`tryLock(0, Long.MAX_VALUE, true)`). Multiple read-only instances can concurrently inspect the database.
+   * **Intra-JVM Lock Coordination:** Because Java NIO's `FileChannel.tryLock()` throws `OverlappingFileLockException` if two separate `FileChannel`s in the *same* JVM attempt to lock the same file (even with `shared = true`), `VulcanoStoreImpl` maintains an internal coordinator (`ACTIVE_DIRECTORY_LOCKS`). Multiple in-process read-only stores safely share the underlying lock channel via reference counting, while exclusive locks are strictly rejected.
+4. **Lifecycle & Shutdown Ordering:** `VulcanoStoreImpl.close()` halts the background compactor and flusher threads outside of the index monitor. This prevents deadlocks between background threads and closing threads, ensuring all background I/O operations terminate cleanly before `StorageEngine` channels and `OffHeapKeyDir` off-heap memory arenas are deallocated.
+
+---
+
+### 6.4. Boot Segment Lifecycle & Reuse
+In classic log-structured engines, reopening an existing database can unnecessarily allocate a new segment file even if the latest segment has ample free capacity. VulcanoStore implements intelligent segment reuse on startup:
+1. **Hint File Inspection:** When scanning for existing segments in `StorageEngine`, the engine checks whether a finalized `.hint` companion exists for `maxFileId`.
+2. **Unfinalized Segment Detection:** If `maxFileId.hint` does NOT exist, the segment was never sealed or was interrupted during operation.
+3. **Write Offset Recovery:** The engine scans the valid `BinaryRecord` entries in `maxFileId.data` sequentially to compute the exact byte offset where valid records end (`writeOffset`).
+4. **Capacity Check & Active Segment Reuse:** If remaining space $(\text{segmentSize} - \text{writeOffset}) \ge \text{HEADER\_SIZE} + 1$, the engine opens `maxFileId.data` directly as the `activeSegment` with `writeOffset` set to the end of the existing records. No new file is created on boot! Subsequent appends seamlessly continue from the existing offset.
+5. **Active Record Recovery:** During startup `recover()`, existing valid records from the reused active segment are populated directly into `OffHeapKeyDir`.
+
+---
+
+### 6.5. Read-Only Mode (`readOnly = true`)
+For CLI query tools, data analyzers, backup utilities, or reader replicas, VulcanoStore provides a dedicated read-only operational mode:
+1. **Shared Locking:** Acquires a shared lock on `vulcano.lock`, enabling multiple concurrent read-only instances on the same directory across processes and threads.
+2. **Zero File Mutations:** `readOnly` mode does not create `vulcano.properties`, does not create new `.data` segment files, and opens all existing `.data` segments using `FileChannel.MapMode.READ_ONLY` and read-only `RandomAccessFile("r")` access.
+3. **No Background Daemons:** The background `Compactor` thread and `vulcanostore-flusher` are completely disabled, consuming zero background CPU cycles.
+4. **Strict Mutation Guard:** Calling `put()` or `delete()` on a read-only store throws `UnsupportedOperationException` immediately.
 
 ---
 
@@ -265,6 +290,7 @@ It contains the following properties:
 *   `segmentSize`: The maximum size of each individual data segment in bytes.
 *   `syncStrategy`: The memory-map page flushing strategy (e.g., `SYNC_INTERVAL`, `SYNC_ALWAYS`, `SYNC_NONE`).
 *   `syncIntervalMs`: The periodic page-flush interval in milliseconds.
+*   `compactionThreshold`: The fragmentation ratio threshold (`deadRecords / totalRecords`) required to trigger compaction on an inactive segment (default: 0.20).
 *   `averageKeySize`: The expected average size of a key in bytes.
 *   `maxKeyMemoryMb`: The maximum off-heap memory size allocated for unique active keys in MB (saved for reference but ignored on load, as the caller's provided configuration takes precedence).
 
@@ -273,10 +299,10 @@ It contains the following properties:
 ## 8. Summary of Classes & Component Architecture
 
 1. **`VulcanoStore` (Interface)**: Defines the programmatic API for the in-process key-value store.
-2. **`VulcanoStoreImpl`**: The concrete class implementing `VulcanoStore`, coordinating directory configuration, `KeyDir`, and `StorageEngine`.
+2. **`VulcanoStoreImpl`**: The concrete class implementing `VulcanoStore`, coordinating directory configuration, `KeyDir`, `StorageEngine`, periodic/immediate sync flushing, JVM shutdown hooks, and intra-JVM directory lock coordination.
 3. **`OffHeapKeyDir`**: The custom off-heap linear-probing index utilizing Java 25 FFM APIs (`MemorySegment`).
-4. **`StorageEngine`**: Manages active/inactive `MappedByteBuffer` logs, write appends, read offsets, and startup initialization/rebuild.
-5. **`Compactor`**: Background thread that handles the merging of inactive log files.
+4. **`StorageEngine`**: Manages active/inactive `MappedByteBuffer` logs, write appends, read offsets, boot segment lifecycle reuse, and startup initialization/rebuild.
+5. **`Compactor`**: Background daemon thread that safely merges inactive log files using threshold-based filtering and deletion safeguards.
 
 ---
 

@@ -350,5 +350,89 @@ public class CompactorTest {
             assertTrue(Files.exists(seg1File), "Compactor must abort and NOT delete truncated/corrupt source segment file");
         }
     }
+
+    @Test
+    public void testCompactionThresholdSkipping(@TempDir Path tempDir) throws Exception {
+        // Configure segment size to hold 100 small records, then roll over
+        // Record size: 22 (header) + 6 ("key-XX") + 6 ("val-XX") = 34 bytes
+        // 100 records = ~3400 bytes. We set segmentSize to 3500 bytes.
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(3500)
+                .maxKeyMemoryMb(4)
+                .compactionThreshold(0.20) // 20% threshold
+                .build();
+
+        try (OffHeapKeyDir index = new OffHeapKeyDir(4);
+             StorageEngine engine = new StorageEngine(config)) {
+
+            for (int i = 0; i < 100; i++) {
+                byte[] k = String.format("k-%04d", i).getBytes();
+                byte[] v = String.format("v-%04d", i).getBytes();
+                BinaryRecord rec = new BinaryRecord(1000L + i, k, v, 0);
+                StorageEngine.WriteResult res = engine.write(rec);
+                index.put(k, res.fileId(), res.valueSize(), res.valueOffset(), res.keyOffset(), res.timestamp());
+            }
+
+            assertEquals(1, engine.getActiveFileId());
+
+            // Force rollover to segment 2 by writing a record that exceeds remaining capacity
+            BinaryRecord rolloverRec = new BinaryRecord(2000L, "rollover-key".getBytes(), new byte[200], 0);
+            StorageEngine.WriteResult resRollover = engine.write(rolloverRec);
+            index.put(rolloverRec.key(), resRollover.fileId(), resRollover.valueSize(), resRollover.valueOffset(), resRollover.keyOffset(), resRollover.timestamp());
+            assertEquals(2, engine.getActiveFileId());
+
+            // Update only 1 key out of the 100 in segment 1 (1% dead records, well below 20% threshold)
+            byte[] updatedKey = "k-0000".getBytes();
+            BinaryRecord updateRec = new BinaryRecord(3000L, updatedKey, "updated-v".getBytes(), 0);
+            StorageEngine.WriteResult resUpdate = engine.write(updateRec);
+            index.put(updatedKey, resUpdate.fileId(), resUpdate.valueSize(), resUpdate.valueOffset(), resUpdate.keyOffset(), resUpdate.timestamp());
+
+            Path seg1File = tempDir.resolve("00000001.data");
+            assertTrue(Files.exists(seg1File));
+
+            try (Compactor compactor = new Compactor(config, engine, index)) {
+                compactor.compact();
+            }
+
+            // Since 1 dead record out of 100 (1%) is < 20% threshold, segment 1 must be skipped and preserved
+            assertTrue(Files.exists(seg1File), "Segment 1 has only 1% dead records and must NOT be compacted when threshold is 20%");
+        }
+    }
+
+    @Test
+    public void testCompactorPreservesSegmentIfIndexEmptyUnlessAllTombstones(@TempDir Path tempDir) throws Exception {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(500)
+                .maxKeyMemoryMb(4)
+                .compactionThreshold(0.20)
+                .build();
+
+        try (StorageEngine engine = new StorageEngine(config)) {
+            // Write 5 records to segment 1
+            for (int i = 0; i < 5; i++) {
+                BinaryRecord rec = new BinaryRecord(1000L + i, ("k-" + i).getBytes(), ("v-" + i).getBytes(), 0);
+                engine.write(rec);
+            }
+
+            // Trigger rollover to segment 2
+            BinaryRecord rec2 = new BinaryRecord(2000L, "rollover".getBytes(), new byte[400], 0);
+            engine.write(rec2);
+            assertEquals(2, engine.getActiveFileId());
+
+            Path seg1File = tempDir.resolve("00000001.data");
+            assertTrue(Files.exists(seg1File));
+
+            // Create an empty index (no records match index)
+            try (OffHeapKeyDir emptyIndex = new OffHeapKeyDir(4);
+                 Compactor compactor = new Compactor(config, engine, emptyIndex)) {
+                compactor.compact();
+            }
+
+            // Under NO circumstances should segment 1 be deleted if records exist but none match index (unless all tombstones)
+            assertTrue(Files.exists(seg1File), "Segment 1 must be preserved on disk when records exist but do not match the index");
+        }
+    }
 }
 

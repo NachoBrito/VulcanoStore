@@ -147,5 +147,53 @@ public class VulcanoConfigTest {
                     .build();
         });
     }
+
+    @Test
+    public void testCompactionThresholdDefaultAndCustom() {
+        Path tempPath = Paths.get("/tmp/vulcanodb-test");
+        VulcanoConfig defaultConfig = VulcanoConfig.builder()
+                .dbPath(tempPath)
+                .build();
+        assertEquals(0.20, defaultConfig.getCompactionThreshold(), 0.0001);
+
+        VulcanoConfig customConfig = VulcanoConfig.builder()
+                .dbPath(tempPath)
+                .compactionThreshold(0.45)
+                .build();
+        assertEquals(0.45, customConfig.getCompactionThreshold(), 0.0001);
+    }
+
+    @Test
+    public void testCompactionThresholdValidation() {
+        Path tempPath = Paths.get("/tmp/vulcanodb-test");
+        assertThrows(IllegalArgumentException.class, () -> {
+            VulcanoConfig.builder()
+                    .dbPath(tempPath)
+                    .compactionThreshold(-0.01)
+                    .build();
+        });
+
+        assertThrows(IllegalArgumentException.class, () -> {
+            VulcanoConfig.builder()
+                    .dbPath(tempPath)
+                    .compactionThreshold(1.01)
+                    .build();
+        });
+    }
+
+    @Test
+    public void testReadOnlyDefaultAndCustom() {
+        Path tempPath = Paths.get("/tmp/vulcanodb-test");
+        VulcanoConfig defaultConfig = VulcanoConfig.builder()
+                .dbPath(tempPath)
+                .build();
+        assertEquals(false, defaultConfig.isReadOnly());
+
+        VulcanoConfig customConfig = VulcanoConfig.builder()
+                .dbPath(tempPath)
+                .readOnly(true)
+                .build();
+        assertEquals(true, customConfig.isReadOnly());
+    }
 }
 

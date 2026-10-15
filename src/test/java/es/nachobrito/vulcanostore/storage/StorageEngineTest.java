@@ -205,4 +205,84 @@ public class StorageEngineTest {
             assertEquals(1001L, slotB.timestamp());
         }
     }
+
+    @Test
+    public void testForceActiveSegment(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(1024 * 1024)
+                .maxKeyMemoryMb(4)
+                .build();
+
+        try (StorageEngine engine = new StorageEngine(config)) {
+            BinaryRecord rec = new BinaryRecord(1000L, "flushKey".getBytes(), "flushVal".getBytes(), 0);
+            engine.write(rec);
+
+            // Calling forceActiveSegment should flush active segment buffer without closing it
+            assertDoesNotThrow(engine::forceActiveSegment);
+
+            // Re-read should work
+            BinaryRecord read = engine.read(1, 0);
+            assertArrayEquals("flushKey".getBytes(), read.key());
+        }
+    }
+
+    @Test
+    public void testReopenNonFullSegmentWithoutHintFileReusesActiveSegment(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(1024 * 1024) // 1MB segment size
+                .maxKeyMemoryMb(4)
+                .build();
+
+        // 1. First run: write records into segment 1
+        try (StorageEngine engine = new StorageEngine(config)) {
+            BinaryRecord rec1 = new BinaryRecord(1000L, "key1".getBytes(), "val1".getBytes(), 0);
+            BinaryRecord rec2 = new BinaryRecord(1001L, "key2".getBytes(), "val2".getBytes(), 0);
+            StorageEngine.WriteResult res1 = engine.write(rec1);
+            StorageEngine.WriteResult res2 = engine.write(rec2);
+            assertEquals(1, res1.fileId());
+            assertEquals(1, res2.fileId());
+            assertEquals(1, engine.getActiveFileId());
+        }
+
+        // Simulate a scenario where .hint was NOT created (e.g. unfinalized active segment or crash)
+        Path hint1 = tempDir.resolve("00000001.hint");
+        Files.deleteIfExists(hint1);
+        assertFalse(Files.exists(hint1));
+
+        Path data1 = tempDir.resolve("00000001.data");
+        assertTrue(Files.exists(data1));
+
+        // 2. Second boot: should detect 00000001.data without .hint, scan writeOffset, see plenty of space,
+        // and REUSE activeFileId = 1 rather than creating 00000002.data!
+        try (OffHeapKeyDir index = new OffHeapKeyDir(4);
+             StorageEngine engine = new StorageEngine(config)) {
+            assertEquals(1, engine.getActiveFileId(), "Expected StorageEngine to reuse active segment 1 when space remains");
+            assertFalse(Files.exists(tempDir.resolve("00000002.data")), "Should NOT create 00000002.data on boot");
+
+            // Recover index
+            engine.recover(index);
+
+            // Verify prior records are restored in index
+            OffHeapKeyDir.Slot slot1 = index.get("key1".getBytes());
+            assertNotNull(slot1, "key1 should be recovered from reused active segment");
+            assertEquals(1, slot1.fileId());
+            BinaryRecord read1 = engine.read(slot1.fileId(), slot1.valueOffset());
+            assertArrayEquals("val1".getBytes(), read1.value());
+
+            OffHeapKeyDir.Slot slot2 = index.get("key2".getBytes());
+            assertNotNull(slot2, "key2 should be recovered from reused active segment");
+            assertEquals(1, slot2.fileId());
+
+            // 3. Write another record and verify it appends to segment 1 without rollover
+            BinaryRecord rec3 = new BinaryRecord(1002L, "key3".getBytes(), "val3".getBytes(), 0);
+            StorageEngine.WriteResult res3 = engine.write(rec3);
+            assertEquals(1, res3.fileId(), "New write should append to reused active segment 1");
+            assertTrue(res3.valueOffset() > slot2.valueOffset(), "Write offset should advance past existing records");
+
+            BinaryRecord read3 = engine.read(1, res3.valueOffset());
+            assertArrayEquals("val3".getBytes(), read3.value());
+        }
+    }
 }

@@ -119,9 +119,10 @@ public class Compactor implements AutoCloseable {
             // Pass 1: Scan segment, validate all records, determine active vs dead records
             List<PendingMigration> activeRecordsToMigrate = new ArrayList<>();
             int deadRecords = 0;
+            int tombstoneRecords = 0;
             boolean scanFailed = false;
 
-            try (FileSegment segment = new FileSegment(fileId, filePath, capacity)) {
+            try (FileSegment segment = new FileSegment(fileId, filePath, capacity, true)) {
                 long offset = 0;
                 while (offset + 22 <= capacity) {
                     if (stopped.get() || Thread.currentThread().isInterrupted()) {
@@ -150,6 +151,7 @@ public class Compactor implements AutoCloseable {
 
                     if (record.isTombstone()) {
                         deadRecords++;
+                        tombstoneRecords++;
                     } else {
                         OffHeapKeyDir.Slot slot;
                         synchronized (index) {
@@ -174,11 +176,30 @@ public class Compactor implements AutoCloseable {
                 continue;
             }
 
-            // Threshold-based compaction:
-            // If 0 dead records exist, this segment is 100% active! Never re-compact it.
-            if (deadRecords == 0) {
-                LOGGER.debug("Segment {} has 0 dead records (100% active). Skipping compaction.", fileId);
+            int totalRecords = activeRecordsToMigrate.size() + deadRecords;
+            if (totalRecords == 0) {
+                LOGGER.debug("Segment {} has 0 total records. Skipping compaction.", fileId);
                 continue;
+            }
+
+            // Threshold-based compaction check
+            if ((double) deadRecords / totalRecords < config.getCompactionThreshold()) {
+                LOGGER.debug("Segment {} dead record ratio ({}/{}) is below compaction threshold {}. Skipping compaction.",
+                        fileId, deadRecords, totalRecords, config.getCompactionThreshold());
+                continue;
+            }
+
+            // Safety guard against accidental deletion:
+            if (activeRecordsToMigrate.isEmpty()) {
+                if (tombstoneRecords == totalRecords) {
+                    LOGGER.info("Segment {} contains only tombstone records ({}/{}). Removing segment.", fileId, tombstoneRecords, totalRecords);
+                    storageEngine.closeAndRemoveSegment(fileId);
+                    continue;
+                } else {
+                    LOGGER.error("Segment {} has {} records but none matched the index, and not all are tombstones (tombstones: {}). Preserving file on disk to avoid data loss.",
+                            fileId, totalRecords, tombstoneRecords);
+                    continue;
+                }
             }
 
             // Pass 2: Migrate active records

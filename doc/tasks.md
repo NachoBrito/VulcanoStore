@@ -253,5 +253,39 @@ We will resolve critical data-loss bugs, infinite compaction rollover loops, uns
 > 6. **Deadlock-Free Clean Shutdown:** Reordered `VulcanoStoreImpl.close()` to stop and join the compactor thread outside the index monitor before closing engine channels and native FFM arenas.
 > 7. **Test Suite Verification:** All 44 tests pass cleanly with zero failures (`mvn clean test`).
 
+---
 
+## 📋 Phase 14: Storage Durability, Compaction Safety, Boot Segment Lifecycle & Read-Only Mode
+We will implement data durability flushing, boot segment reuse, compactor threshold safety and deletion guards, and read-only mode.
 
+* [x] **Task 14.1: Write failing TDD tests for `VulcanoConfig` additions**
+  * *Red:* Write tests in `VulcanoConfigTest.java` verifying `compactionThreshold` (default 0.20, validation [0.0, 1.0]) and `readOnly` (default false).
+* [x] **Task 14.2: Implement `compactionThreshold` and `readOnly` in `VulcanoConfig`**
+  * *Green:* Add fields, builder methods, validations, and getters to `VulcanoConfig`.
+* [x] **Task 14.3: Write failing TDD tests for `SyncStrategy` flusher & durability**
+  * *Red:* Write tests in `VulcanoStoreTest.java` verifying `SYNC_ALWAYS` and `SYNC_INTERVAL` flush data to disk so reopening after process termination preserves all written records.
+* [x] **Task 14.4: Implement `FileSegment.force()`, `StorageEngine.forceActiveSegment()`, and background flusher**
+  * *Green:* Implement `force()` in `FileSegment`, `forceActiveSegment()` in `StorageEngine`, flusher executor and JVM shutdown hook in `VulcanoStoreImpl`.
+* [x] **Task 14.5: Write failing TDD tests for boot segment reuse in `StorageEngine`**
+  * *Red:* Write tests in `StorageEngineTest.java` reopening an existing non-full segment on boot without a `.hint` file to verify it appends to the same file without incrementing `activeFileId` and recovers existing records.
+* [x] **Task 14.6: Implement boot segment reuse and recovery in `StorageEngine`**
+  * *Green:* Detect unfinalized segments on boot, scan records to determine actual `writeOffset`, reuse segment if capacity remains, and recover records from reused active segment.
+* [x] **Task 14.7: Write failing TDD tests for compactor threshold and deletion safety**
+  * *Red:* Write tests in `CompactorTest.java` asserting segments below threshold are skipped, and segments are never deleted if migration cannot be confirmed unless 100% tombstones.
+* [x] **Task 14.8: Implement compactor threshold and safe deletion guards in `Compactor`**
+  * *Green:* Update threshold calculation and add safety guards in `Compactor.java`.
+* [x] **Task 14.9: Write failing TDD tests for read-only mode**
+  * *Red:* Write tests in `VulcanoStoreTest.java` asserting `readOnly(true)` permits multiple concurrent instances, disallows mutations (`put`/`delete`), does not spin up compactor or flusher, and does not create new files.
+* [x] **Task 14.10: Implement read-only mode in `VulcanoStoreImpl` and `StorageEngine`**
+  * *Green:* Implement shared locking, read-only segment mapping, mutation rejection, and skip compactor/flusher initialization.
+* [x] **Task 14.11: Update `doc/design.md` and document execution report in `doc/tasks.md`**
+  * Complete full test suite run (`mvn clean test`) and update documentation.
+
+> [!NOTE]
+> **Phase 14 Execution Report:** Implemented full durability syncing, boot segment reuse, compactor threshold and safe deletion guards, and read-only mode following strict TDD.
+> 1. **Configuration Extensions (`compactionThreshold` & `readOnly`):** Added `compactionThreshold` (default `0.20`, validated within `[0.0, 1.0]`) and `readOnly` (default `false`) with full builder support, validation, and serialization in `vulcano.properties`.
+> 2. **Durability & Flusher (`SYNC_ALWAYS` & `SYNC_INTERVAL`):** Implemented `FileSegment.force()` and `StorageEngine.forceActiveSegment()`. Enforced synchronous flushing on every write/delete under `SYNC_ALWAYS`. Spawned a background daemon executor (`vulcanostore-flusher`) for `SYNC_INTERVAL` at `syncIntervalMs` cadence. Registered a JVM shutdown hook for graceful termination and disk flushing upon SIGTERM.
+> 3. **Boot Segment Reuse:** Resolved unconditional segment file incrementation on startup. `StorageEngine` checks if `maxFileId.hint` exists; if unfinalized, scans valid records to calculate `writeOffset` and reuses `maxFileId.data` as the active segment if capacity remains, recovering its records into `OffHeapKeyDir`.
+> 4. **Compactor Safety & Deletion Safeguards:** Compactor checks fragmentation ratio `(deadRecords / totalRecords) >= config.getCompactionThreshold()`. If unindexed records are detected during migration (`activeRecordsToMigrate.isEmpty()` but `totalRecords > 0`), segment deletion is strictly blocked unless verified 100% tombstones, preserving unindexed/corrupt files on disk and logging an `ERROR`. Segment pass 1 scanning uses read-only `FileSegment` mappings.
+> 5. **Read-Only Mode & Intra-JVM Lock Coordination:** Added `readOnly(true)` support: disables compactor and flusher threads, maps segments with `MapMode.READ_ONLY`, disallows `put()` and `delete()` with `UnsupportedOperationException`, and manages shared file locks on `vulcano.lock`. Introduced `ACTIVE_DIRECTORY_LOCKS` coordinator inside `VulcanoStoreImpl` to enable multiple concurrent read-only instances within the same JVM without triggering Java NIO `OverlappingFileLockException`.
+> 6. **Test Suite Verification:** Expanded test suite from 44 to 56 tests across `VulcanoConfigTest`, `StorageEngineTest`, `CompactorTest`, and `VulcanoStoreTest`, all passing cleanly (`mvn clean test`).

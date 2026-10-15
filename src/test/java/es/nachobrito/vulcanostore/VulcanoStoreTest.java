@@ -44,6 +44,13 @@ public class VulcanoStoreTest {
         store = new VulcanoStoreImpl(config);
     }
 
+    @org.junit.jupiter.api.AfterEach
+    public void tearDown() throws IOException {
+        if (store != null) {
+            store.close();
+        }
+    }
+
     @Test
     public void testPutAndGet() throws IOException {
         byte[] key = "myKey".getBytes();
@@ -364,6 +371,150 @@ public class VulcanoStoreTest {
         // Once store1 is closed, opening another store on the directory should succeed
         try (VulcanoStore store2 = new VulcanoStoreImpl(config)) {
             assertNotNull(store2);
+        }
+    }
+
+    @Test
+    public void testSyncAlwaysDurability(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(1024 * 1024)
+                .maxKeyMemoryMb(4)
+                .syncStrategy(SyncStrategy.SYNC_ALWAYS)
+                .build();
+
+        try (VulcanoStore store = new VulcanoStoreImpl(config)) {
+            store.put("syncKey", "syncVal");
+
+            // Verify .data file contains the data on disk
+            Path dataFile = tempDir.resolve("00000001.data");
+            assertTrue(java.nio.file.Files.exists(dataFile));
+            assertTrue(java.nio.file.Files.size(dataFile) > 0);
+
+            // Read the record directly from file using a separate stream
+            byte[] fileBytes = java.nio.file.Files.readAllBytes(dataFile);
+            String fileContent = new String(fileBytes, java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(fileContent.contains("syncKey"));
+            assertTrue(fileContent.contains("syncVal"));
+        }
+    }
+
+    @Test
+    public void testSyncIntervalFlusherLifecycle(@TempDir Path tempDir) throws Exception {
+        if (this.store != null) {
+            this.store.close();
+        }
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(1024 * 1024)
+                .maxKeyMemoryMb(4)
+                .syncStrategy(SyncStrategy.SYNC_INTERVAL)
+                .syncIntervalMs(50)
+                .build();
+
+        VulcanoStore customStore = new VulcanoStoreImpl(config);
+        try {
+            customStore.put("intervalKey", "intervalVal");
+
+            // Verify background flusher thread exists and is running
+            boolean flusherFound = Thread.getAllStackTraces().keySet().stream()
+                    .anyMatch(t -> "vulcanostore-flusher".equals(t.getName()) && t.isAlive());
+            assertTrue(flusherFound, "Expected 'vulcanostore-flusher' thread to be running");
+
+            // Wait for at least one flush tick
+            Thread.sleep(120);
+
+            Path dataFile = tempDir.resolve("00000001.data");
+            byte[] fileBytes = java.nio.file.Files.readAllBytes(dataFile);
+            String fileContent = new String(fileBytes, java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(fileContent.contains("intervalKey"));
+            assertTrue(fileContent.contains("intervalVal"));
+        } finally {
+            customStore.close();
+        }
+
+        // After close, verify flusher thread is stopped
+        Thread.sleep(100);
+        boolean flusherStillAlive = Thread.getAllStackTraces().keySet().stream()
+                .anyMatch(t -> "vulcanostore-flusher".equals(t.getName()) && t.isAlive());
+        assertFalse(flusherStillAlive, "Expected 'vulcanostore-flusher' thread to be stopped after close");
+    }
+
+    @Test
+    public void testReadOnlyDisallowsMutations(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig roConfig = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .readOnly(true)
+                .build();
+
+        try (VulcanoStore roStore = new VulcanoStoreImpl(roConfig)) {
+            assertThrows(UnsupportedOperationException.class, () -> roStore.put("k", "v"));
+            assertThrows(UnsupportedOperationException.class, () -> roStore.put("k".getBytes(), "v".getBytes()));
+            assertThrows(UnsupportedOperationException.class, () -> roStore.delete("k"));
+            assertThrows(UnsupportedOperationException.class, () -> roStore.delete("k".getBytes()));
+        }
+    }
+
+    @Test
+    public void testReadOnlyMultipleConcurrentInstances(@TempDir Path tempDir) throws IOException {
+        // 1. First populate data in read-write mode and close
+        VulcanoConfig rwConfig = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(1024 * 1024)
+                .maxKeyMemoryMb(4)
+                .build();
+
+        try (VulcanoStore rwStore = new VulcanoStoreImpl(rwConfig)) {
+            rwStore.put("sharedKey", "sharedVal");
+        }
+
+        long fileCountBefore;
+        try (var s = java.nio.file.Files.list(tempDir)) {
+            fileCountBefore = s.count();
+        }
+
+        // 2. Open two concurrent read-only instances on the same folder
+        VulcanoConfig roConfig = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .readOnly(true)
+                .build();
+
+        try (VulcanoStore reader1 = new VulcanoStoreImpl(roConfig);
+             VulcanoStore reader2 = new VulcanoStoreImpl(roConfig)) {
+
+            assertEquals(Optional.of("sharedVal"), reader1.get("sharedKey"));
+            assertEquals(Optional.of("sharedVal"), reader2.get("sharedKey"));
+            assertTrue(reader1.exists("sharedKey"));
+            assertTrue(reader2.exists("sharedKey"));
+
+            // Verify no new files were created
+            long fileCountAfter;
+            try (var s = java.nio.file.Files.list(tempDir)) {
+                fileCountAfter = s.count();
+            }
+            assertEquals(fileCountBefore, fileCountAfter, "Read-only instances must not create new files");
+        }
+    }
+
+    @Test
+    public void testReadOnlyLockConflictWithReadWrite(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig rwConfig = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .build();
+
+        VulcanoConfig roConfig = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .readOnly(true)
+                .build();
+
+        // 1. If RW instance is open, RO instance cannot open (exclusive vs shared conflict)
+        try (VulcanoStore rwStore = new VulcanoStoreImpl(rwConfig)) {
+            assertThrows(IllegalStateException.class, () -> new VulcanoStoreImpl(roConfig));
+        }
+
+        // 2. If RO instance is open, RW instance cannot open (shared vs exclusive conflict)
+        try (VulcanoStore roStore = new VulcanoStoreImpl(roConfig)) {
+            assertThrows(IllegalStateException.class, () -> new VulcanoStoreImpl(rwConfig));
         }
     }
 }

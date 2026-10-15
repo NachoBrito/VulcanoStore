@@ -73,6 +73,18 @@ public class VulcanoConfig {
      */
     private final int averageKeySize;
 
+    /**
+     * The minimum ratio of dead records in a segment (between 0.0 and 1.0) required to trigger compaction.
+     * Default value is 0.20 (20%).
+     */
+    private final double compactionThreshold;
+
+    /**
+     * Whether the database is opened in read-only mode.
+     * Default is false.
+     */
+    private final boolean readOnly;
+
     private VulcanoConfig(Builder builder) {
         this.dbPath = builder.dbPath;
         this.segmentSize = builder.segmentSize;
@@ -80,6 +92,8 @@ public class VulcanoConfig {
         this.syncStrategy = builder.syncStrategy;
         this.syncIntervalMs = builder.syncIntervalMs;
         this.averageKeySize = builder.averageKeySize;
+        this.compactionThreshold = builder.compactionThreshold;
+        this.readOnly = builder.readOnly;
     }
 
     /**
@@ -137,6 +151,24 @@ public class VulcanoConfig {
     }
 
     /**
+     * Returns the configured compaction threshold (minimum dead record ratio to trigger compaction).
+     *
+     * @return the compaction threshold between 0.0 and 1.0.
+     */
+    public double getCompactionThreshold() {
+        return compactionThreshold;
+    }
+
+    /**
+     * Returns whether the database is configured in read-only mode.
+     *
+     * @return true if read-only; false otherwise.
+     */
+    public boolean isReadOnly() {
+        return readOnly;
+    }
+
+    /**
      * Creates a new instance of the configuration {@link Builder}.
      *
      * @return a fresh {@link Builder} instance.
@@ -155,6 +187,8 @@ public class VulcanoConfig {
         private SyncStrategy syncStrategy = SyncStrategy.SYNC_INTERVAL;
         private long syncIntervalMs = 500;           // 500ms default
         private int averageKeySize = 36;             // Default to length in bytes of UUID string (36 bytes)
+        private double compactionThreshold = 0.20;   // 20% dead records default
+        private boolean readOnly = false;            // Read-only mode default false
 
         /**
          * Sets the directory path for database storage.
@@ -223,10 +257,33 @@ public class VulcanoConfig {
         }
 
         /**
+         * Sets the compaction threshold (minimum dead records ratio to trigger compaction).
+         *
+         * @param compactionThreshold the dead record ratio between 0.0 and 1.0.
+         * @return this builder instance for method chaining.
+         */
+        public Builder compactionThreshold(double compactionThreshold) {
+            this.compactionThreshold = compactionThreshold;
+            return this;
+        }
+
+        /**
+         * Sets whether the database should be opened in read-only mode.
+         *
+         * @param readOnly true for read-only mode, false for normal read-write mode.
+         * @return this builder instance for method chaining.
+         */
+        public Builder readOnly(boolean readOnly) {
+            this.readOnly = readOnly;
+            return this;
+        }
+
+        /**
          * Assembles, validates, and returns a new {@link VulcanoConfig} instance.
          *
          * @return the validated {@link VulcanoConfig} object.
-         * @throws IllegalArgumentException if dbPath or syncStrategy is null, or if segmentSize, maxKeyMemoryMb, or syncIntervalMs is non-positive.
+         * @throws IllegalArgumentException if dbPath or syncStrategy is null, or if segmentSize, maxKeyMemoryMb, or syncIntervalMs is non-positive,
+         *                                  or if compactionThreshold is not between 0.0 and 1.0.
          */
         public VulcanoConfig build() {
             if (dbPath == null) {
@@ -246,6 +303,9 @@ public class VulcanoConfig {
             }
             if (averageKeySize <= 0) {
                 throw new IllegalArgumentException("Average key size must be positive");
+            }
+            if (compactionThreshold < 0.0 || compactionThreshold > 1.0) {
+                throw new IllegalArgumentException("Compaction threshold must be between 0.0 and 1.0");
             }
             return new VulcanoConfig(this);
         }
