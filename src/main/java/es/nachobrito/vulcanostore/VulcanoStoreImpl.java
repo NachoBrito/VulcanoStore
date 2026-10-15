@@ -22,6 +22,12 @@ import es.nachobrito.vulcanostore.storage.OffHeapKeyDir;
 import es.nachobrito.vulcanostore.storage.StorageEngine;
 
 import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
 import java.util.Optional;
 
@@ -37,6 +43,8 @@ public class VulcanoStoreImpl implements VulcanoStore {
     private final OffHeapKeyDir index;
     private final StorageEngine storageEngine;
     private final Compactor compactor;
+    private final FileChannel lockChannel;
+    private final FileLock directoryLock;
 
     /**
      * Instantiates the VulcanoStore database engine with the specified configuration.
@@ -47,8 +55,34 @@ public class VulcanoStoreImpl implements VulcanoStore {
         if (config == null) {
             throw new IllegalArgumentException("Configuration cannot be null");
         }
-        this.config = resolveConfig(config);
+
+        Path dbPath = config.getDbPath();
         try {
+            Files.createDirectories(dbPath);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to create database directory: " + dbPath, e);
+        }
+
+        Path lockPath = dbPath.resolve("vulcano.lock");
+        try {
+            this.lockChannel = FileChannel.open(lockPath, StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+            FileLock lock;
+            try {
+                lock = this.lockChannel.tryLock();
+            } catch (OverlappingFileLockException e) {
+                lock = null;
+            }
+            if (lock == null) {
+                this.lockChannel.close();
+                throw new IllegalStateException("Database directory is already locked by another process: " + dbPath);
+            }
+            this.directoryLock = lock;
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to acquire database directory lock on " + lockPath, e);
+        }
+
+        try {
+            this.config = resolveConfig(config);
             this.index = new OffHeapKeyDir(this.config.getMaxKeyMemoryMb(), this.config.getAverageKeySize());
             this.storageEngine = new StorageEngine(this.config);
 
@@ -58,8 +92,12 @@ public class VulcanoStoreImpl implements VulcanoStore {
             // Initialize and start background compactor
             this.compactor = new Compactor(this.config, storageEngine, index);
             this.compactor.start();
-        } catch (IOException e) {
-            throw new RuntimeException("Failed to initialize VulcanoStore storage engine", e);
+        } catch (Throwable t) {
+            releaseLock();
+            if (t instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException("Failed to initialize VulcanoStore storage engine", t);
         }
     }
 
@@ -204,21 +242,42 @@ public class VulcanoStoreImpl implements VulcanoStore {
 
     @Override
     public void close() throws IOException {
-        synchronized (index) {
-            try {
-                if (compactor != null) {
-                    compactor.close();
-                }
-            } catch (Exception e) {
-                throw new IOException("Failed to stop background compactor", e);
-            } finally {
+        try {
+            if (compactor != null) {
+                compactor.close();
+            }
+        } catch (Exception e) {
+            throw new IOException("Failed to stop background compactor", e);
+        } finally {
+            synchronized (index) {
                 try {
                     if (storageEngine != null) {
                         storageEngine.close();
                     }
                 } finally {
-                    index.close();
+                    try {
+                        if (index != null) {
+                            index.close();
+                        }
+                    } finally {
+                        releaseLock();
+                    }
                 }
+            }
+        }
+    }
+
+    private void releaseLock() {
+        if (directoryLock != null && directoryLock.isValid()) {
+            try {
+                directoryLock.release();
+            } catch (IOException ignored) {
+            }
+        }
+        if (lockChannel != null && lockChannel.isOpen()) {
+            try {
+                lockChannel.close();
+            } catch (IOException ignored) {
             }
         }
     }

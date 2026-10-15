@@ -345,5 +345,27 @@ public class VulcanoStoreTest {
             assertEquals(10, store2.getConfig().getMaxKeyMemoryMb());
         }
     }
+
+    @Test
+    public void testExclusiveDatabaseDirectoryLock(@TempDir Path tempDir) throws IOException {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(1024 * 1024)
+                .maxKeyMemoryMb(4)
+                .build();
+
+        try (VulcanoStore store1 = new VulcanoStoreImpl(config)) {
+            // Attempting to open a second store on the same active directory should fail with IllegalStateException
+            assertThrows(IllegalStateException.class, () -> {
+                new VulcanoStoreImpl(config);
+            }, "Expected opening second store on locked directory to fail");
+        }
+
+        // Once store1 is closed, opening another store on the directory should succeed
+        try (VulcanoStore store2 = new VulcanoStoreImpl(config)) {
+            assertNotNull(store2);
+        }
+    }
 }
+
 

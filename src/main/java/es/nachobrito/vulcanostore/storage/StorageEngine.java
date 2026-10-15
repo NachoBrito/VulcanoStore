@@ -49,6 +49,7 @@ public class StorageEngine implements AutoCloseable {
 
     private final VulcanoConfig config;
     private final Map<Integer, FileSegment> inactiveSegments;
+    private final java.util.concurrent.locks.ReentrantLock writeLock = new java.util.concurrent.locks.ReentrantLock();
 
     private int activeFileId;
     private FileSegment activeSegment;
@@ -64,7 +65,7 @@ public class StorageEngine implements AutoCloseable {
             throw new IllegalArgumentException("Configuration cannot be null");
         }
         this.config = config;
-        this.inactiveSegments = new HashMap<>();
+        this.inactiveSegments = new java.util.concurrent.ConcurrentHashMap<>();
 
         Path dbPath = config.getDbPath();
         if (dbPath != null) {
@@ -112,38 +113,43 @@ public class StorageEngine implements AutoCloseable {
             throw new IOException("Record size " + recordSize + " is larger than segment size limit " + config.getSegmentSize());
         }
 
-        // Check if active segment has enough space; trigger rollover if full
-        if (activeSegment.getWriteOffset() + recordSize > config.getSegmentSize()) {
-            // Rollover: close current active segment
-            activeSegment.close();
+        writeLock.lock();
+        try {
+            // Check if active segment has enough space; trigger rollover if full
+            if (activeSegment.getWriteOffset() + recordSize > config.getSegmentSize()) {
+                // Rollover: close current active segment
+                activeSegment.close();
 
-            // Write hint file for the closed active segment
-            writeHintFile(activeSegment.getFilePath());
+                // Write hint file for the closed active segment
+                writeHintFile(activeSegment.getFilePath());
 
-            // Map the closed segment as inactive
-            inactiveSegments.put(activeFileId, new FileSegment(activeFileId, activeSegment.getFilePath(), config.getSegmentSize()));
+                // Map the closed segment as inactive
+                inactiveSegments.put(activeFileId, new FileSegment(activeFileId, activeSegment.getFilePath(), config.getSegmentSize()));
 
-            // Open new active segment with incremented ID
-            activeFileId++;
-            Path newActivePath = config.getDbPath().resolve(String.format("%08d.data", activeFileId));
-            activeSegment = new FileSegment(activeFileId, newActivePath, config.getSegmentSize());
+                // Open new active segment with incremented ID
+                activeFileId++;
+                Path newActivePath = config.getDbPath().resolve(String.format("%08d.data", activeFileId));
+                activeSegment = new FileSegment(activeFileId, newActivePath, config.getSegmentSize());
+            }
+
+            long offset = activeSegment.append(record);
+
+            int keyLen = record.key().length;
+            int valLen = record.isTombstone() ? 0 : record.value().length;
+
+            long keyOffset = offset + 22;
+            long valueOffset = offset; // In Bitcask, the index valueOffset points to the start of the record
+
+            return new WriteResult(
+                    activeFileId,
+                    valLen,
+                    valueOffset,
+                    keyOffset,
+                    record.timestamp()
+            );
+        } finally {
+            writeLock.unlock();
         }
-
-        long offset = activeSegment.append(record);
-
-        int keyLen = record.key().length;
-        int valLen = record.isTombstone() ? 0 : record.value().length;
-
-        long keyOffset = offset + 22;
-        long valueOffset = offset; // In Bitcask, the index valueOffset points to the start of the record
-
-        return new WriteResult(
-                activeFileId,
-                valLen,
-                valueOffset,
-                keyOffset,
-                record.timestamp()
-        );
     }
 
     /**
@@ -160,19 +166,24 @@ public class StorageEngine implements AutoCloseable {
     }
 
     private FileSegment getOrLoadSegment(int fileId) throws IOException {
-        if (fileId == activeFileId) {
-            return activeSegment;
-        }
-        FileSegment seg = inactiveSegments.get(fileId);
-        if (seg == null) {
-            Path filePath = config.getDbPath().resolve(String.format("%08d.data", fileId));
-            if (!Files.exists(filePath)) {
-                throw new IOException("Segment file not found for file ID: " + fileId);
+        writeLock.lock();
+        try {
+            if (fileId == activeFileId) {
+                return activeSegment;
             }
-            seg = new FileSegment(fileId, filePath, config.getSegmentSize());
-            inactiveSegments.put(fileId, seg);
+            FileSegment seg = inactiveSegments.get(fileId);
+            if (seg == null) {
+                Path filePath = config.getDbPath().resolve(String.format("%08d.data", fileId));
+                if (!Files.exists(filePath)) {
+                    throw new IOException("Segment file not found for file ID: " + fileId);
+                }
+                seg = new FileSegment(fileId, filePath, config.getSegmentSize());
+                inactiveSegments.put(fileId, seg);
+            }
+            return seg;
+        } finally {
+            writeLock.unlock();
         }
-        return seg;
     }
 
     /**
@@ -340,7 +351,12 @@ public class StorageEngine implements AutoCloseable {
      * @return the active file ID.
      */
     public int getActiveFileId() {
-        return activeFileId;
+        writeLock.lock();
+        try {
+            return activeFileId;
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     /**
@@ -351,14 +367,19 @@ public class StorageEngine implements AutoCloseable {
      * @throws IOException if a low-level filesystem or channel error occurs.
      */
     public void closeAndRemoveSegment(int fileId) throws IOException {
-        FileSegment seg = inactiveSegments.remove(fileId);
-        if (seg != null) {
-            seg.close();
+        writeLock.lock();
+        try {
+            FileSegment seg = inactiveSegments.remove(fileId);
+            if (seg != null) {
+                seg.close();
+            }
+            Path dataPath = config.getDbPath().resolve(String.format("%08d.data", fileId));
+            Path hintPath = config.getDbPath().resolve(String.format("%08d.hint", fileId));
+            Files.deleteIfExists(dataPath);
+            Files.deleteIfExists(hintPath);
+        } finally {
+            writeLock.unlock();
         }
-        Path dataPath = config.getDbPath().resolve(String.format("%08d.data", fileId));
-        Path hintPath = config.getDbPath().resolve(String.format("%08d.hint", fileId));
-        Files.deleteIfExists(dataPath);
-        Files.deleteIfExists(hintPath);
     }
 
     /**
@@ -368,18 +389,23 @@ public class StorageEngine implements AutoCloseable {
      */
     @Override
     public void close() throws IOException {
-        if (activeSegment != null) {
-            activeSegment.close();
-            // Write hint file for final active segment on normal close if it contains data
-            if (activeSegment.getWriteOffset() > 0) {
-                writeHintFile(activeSegment.getFilePath());
+        writeLock.lock();
+        try {
+            if (activeSegment != null) {
+                activeSegment.close();
+                // Write hint file for final active segment on normal close if it contains data
+                if (activeSegment.getWriteOffset() > 0) {
+                    writeHintFile(activeSegment.getFilePath());
+                }
             }
-        }
-        for (FileSegment seg : inactiveSegments.values()) {
-            if (seg != null) {
-                seg.close();
+            for (FileSegment seg : inactiveSegments.values()) {
+                if (seg != null) {
+                    seg.close();
+                }
             }
+            inactiveSegments.clear();
+        } finally {
+            writeLock.unlock();
         }
-        inactiveSegments.clear();
     }
 }

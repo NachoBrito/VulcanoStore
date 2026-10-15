@@ -212,12 +212,27 @@ Scanning multi-gigabyte data files sequentially on startup to rebuild the `KeyDi
 * The hint file contains the exact `KeyEntry` structures (key, fileId, offset, size, timestamp) but **omits the actual values**.
 * On startup, VulcanoStore scans the `.hint` files first. Rebuilding the index from hint files is up to $100\times$ faster because they are extremely compact.
 
-### 6.2. Background Merge (Compaction)
-Append-only logs naturally accumulate stale data (e.g., old versions of updated keys or tombstone markers for deleted keys). VulcanoStore implements a clean, lock-free **Background Merge Processor**:
-1. A background thread scans inactive data files.
-2. It cross-references each record with the current active `KeyDir`.
-3. If the record in the file matches the latest entry in the `KeyDir`, it writes the record to a new, compacted data log file.
-4. When finished, the background thread commits these updates to `KeyDir` atomically by swapping file IDs and offsets.
+### 6.2. Background Merge (Compactor)
+Append-only logs naturally accumulate stale data (e.g., old versions of updated keys or tombstone markers for deleted keys). VulcanoStore implements a robust, fault-tolerant **Background Merge Processor**:
+1. **Directory Scanning & Identification:** A background thread scans inactive data files (`fileId < activeFileId`).
+2. **Threshold-Based Compaction:**
+   * Scans each candidate segment and cross-references its records with the current active `KeyDir`.
+   * Calculates the number of stale/tombstone/overwritten records (`deadRecords`).
+   * **100% Active Segments Skipped:** If `deadRecords == 0`, the segment is completely skipped and preserved. This eliminates infinite compaction rollover loops where active data is endlessly re-migrated.
+3. **Safe Two-Pass Migration:**
+   * If any error occurs reading a segment (e.g., truncated or corrupt file), the compactor logs the error via SLF4J (`org.slf4j.Logger`) and aborts compaction for that segment without deleting the source file.
+   * Migrates active records by writing them to disk.
+   * Re-verifies under the index monitor (`synchronized(index)`) that the slot still points to the exact migrated segment and offset before swapping coordinates. If a user thread modified or deleted the key concurrently, the compactor leaves the newer entry intact.
+4. **Atomic Inactive Segment Removal:** The source `.data` and `.hint` files are removed from disk (`storageEngine.closeAndRemoveSegment(fileId)`) only after confirming 100% of all active records were successfully migrated and committed.
+
+---
+
+### 6.3. Concurrency, Synchronization & Process Locking
+While VulcanoStore is primarily designed for high-performance single-worker or externally synchronized usage, concurrent background compaction requires internal thread safety:
+1. **Thread-Safe StorageEngine:** `StorageEngine.write(BinaryRecord)` is guarded by a `ReentrantLock`. Ingestion threads and the background compactor can append concurrently without offset interleaving, buffer overflow exceptions, or race conditions on segment rollover.
+2. **Atomic Index Swaps:** `OffHeapKeyDir` updates from compaction and point operations synchronize on the index instance monitor, ensuring readers never observe torn coordinates or stale file references.
+3. **Exclusive Process Lock (`vulcano.lock`):** Upon initialization, `VulcanoStoreImpl` acquires an exclusive file lock on `vulcano.lock` via `FileChannel.tryLock()`. This prevents multiple operating system processes or JVM instances from concurrently opening and corrupting the same database folder.
+4. **Lifecycle & Shutdown Ordering:** `VulcanoStoreImpl.close()` halts the background compactor and joins its worker thread first, outside of the index monitor. This prevents deadlocks between the compactor and closing threads, ensuring all background I/O operations terminate cleanly before `StorageEngine` channels and `OffHeapKeyDir` off-heap memory arenas are deallocated.
 
 ---
 

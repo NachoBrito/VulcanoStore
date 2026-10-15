@@ -37,10 +37,10 @@ public class CompactorTest {
 
     @Test
     public void testLogCompaction(@TempDir Path tempDir) throws Exception {
-        // 1. Configure StorageEngine with segmentSize = 50 to force rollovers with small records
+        // 1. Configure StorageEngine with segmentSize = 65 so rec1 and rec2 fit in segment 1
         VulcanoConfig config = VulcanoConfig.builder()
                 .dbPath(tempDir)
-                .segmentSize(50)
+                .segmentSize(65)
                 .maxKeyMemoryMb(4)
                 .build();
 
@@ -198,4 +198,157 @@ public class CompactorTest {
             assertEquals(0, errorCount.get(), "Concurrency swap resulted in non-atomic coordinate reading!");
         }
     }
+
+    @Test
+    public void testMultiSegmentCompactionWithActiveDataGreaterThanSegmentSize(@TempDir Path tempDir) throws Exception {
+        // Configure StorageEngine with small segment size (4 KB) so 1,000 records span multiple segments
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(4096)
+                .maxKeyMemoryMb(4)
+                .build();
+
+        try (OffHeapKeyDir index = new OffHeapKeyDir(4);
+             StorageEngine engine = new StorageEngine(config)) {
+
+            int totalRecords = 1000;
+            for (int i = 0; i < totalRecords; i++) {
+                byte[] key = String.format("key-%05d", i).getBytes();
+                byte[] val = String.format("value-payload-for-%05d", i).getBytes();
+                BinaryRecord record = new BinaryRecord(System.currentTimeMillis(), key, val, 0);
+                StorageEngine.WriteResult res = engine.write(record);
+                index.put(key, res.fileId(), res.valueSize(), res.valueOffset(), res.keyOffset(), res.timestamp());
+            }
+
+            int activeFileIdBefore = engine.getActiveFileId();
+            // Verify multiple segments were indeed generated
+            assertTrue(activeFileIdBefore > 5, "Expected multiple segments across 1,000 records, but got activeFileId: " + activeFileIdBefore);
+
+            long segmentCountBefore;
+            try (var s = Files.list(tempDir)) {
+                segmentCountBefore = s.filter(p -> p.getFileName().toString().endsWith(".data")).count();
+            }
+
+            // Inactive segments currently have 100% active records (0 dead records)
+            try (Compactor compactor = new Compactor(config, engine, index)) {
+                compactor.compact();
+            }
+
+            int activeFileIdAfter = engine.getActiveFileId();
+            long segmentCountAfter;
+            try (var s = Files.list(tempDir)) {
+                segmentCountAfter = s.filter(p -> p.getFileName().toString().endsWith(".data")).count();
+            }
+
+            // Segments with 0 dead records must be skipped: activeFileId must NOT advance and segment count must not blow up
+            assertEquals(activeFileIdBefore, activeFileIdAfter, "Compacting 100% active segments should skip them and not trigger new segment rollovers");
+            assertEquals(segmentCountBefore, segmentCountAfter, "Segment count should remain unchanged when 0 dead records exist");
+
+            // 100% of all 1,000 keys and their exact values must remain intact and retrievable
+            for (int i = 0; i < totalRecords; i++) {
+                byte[] key = String.format("key-%05d", i).getBytes();
+                byte[] expectedVal = String.format("value-payload-for-%05d", i).getBytes();
+
+                OffHeapKeyDir.Slot slot = index.get(key);
+                assertNotNull(slot, "Slot must exist for key " + i);
+                BinaryRecord record = engine.read(slot.fileId(), slot.valueOffset());
+                assertNotNull(record, "Record must be readable for key " + i);
+                assertArrayEquals(expectedVal, record.value(), "Value must match for key " + i);
+            }
+        }
+    }
+
+    @Test
+    public void testConcurrentIngestionAndCompactionStress(@TempDir Path tempDir) throws Exception {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(8192)
+                .maxKeyMemoryMb(4)
+                .build();
+
+        int writerThreads = 4;
+        int recordsPerThread = 250;
+        ExecutorService writerPool = Executors.newFixedThreadPool(writerThreads);
+        CountDownLatch startLatch = new CountDownLatch(1);
+        AtomicInteger writeErrors = new AtomicInteger(0);
+
+        try (es.nachobrito.vulcanostore.VulcanoStore store = new es.nachobrito.vulcanostore.VulcanoStoreImpl(config)) {
+            for (int t = 0; t < writerThreads; t++) {
+                final int threadId = t;
+                writerPool.submit(() -> {
+                    try {
+                        startLatch.await();
+                        for (int i = 0; i < recordsPerThread; i++) {
+                            String key = "thread-" + threadId + "-key-" + i;
+                            String val = "thread-" + threadId + "-val-" + i;
+                            store.put(key, val);
+                            if (i % 5 == 0) {
+                                // Overwrite to create dead records that compactor can clean
+                                store.put(key, val + "-updated");
+                            }
+                        }
+                    } catch (Exception e) {
+                        writeErrors.incrementAndGet();
+                    }
+                });
+            }
+
+            startLatch.countDown();
+            writerPool.shutdown();
+            assertTrue(writerPool.awaitTermination(30, java.util.concurrent.TimeUnit.SECONDS));
+
+            assertEquals(0, writeErrors.get(), "Concurrent ingestion encountered write errors");
+
+            // Verify all committed keys are readable
+            for (int t = 0; t < writerThreads; t++) {
+                for (int i = 0; i < recordsPerThread; i++) {
+                    String key = "thread-" + t + "-key-" + i;
+                    String expectedVal = (i % 5 == 0)
+                            ? "thread-" + t + "-val-" + i + "-updated"
+                            : "thread-" + t + "-val-" + i;
+                    var valOpt = store.get(key);
+                    assertTrue(valOpt.isPresent(), "Key " + key + " should be present");
+                    assertEquals(expectedVal, valOpt.get(), "Value for key " + key + " must match");
+                }
+            }
+        }
+    }
+
+    @Test
+    public void testFaultToleranceAbortOnFailure(@TempDir Path tempDir) throws Exception {
+        VulcanoConfig config = VulcanoConfig.builder()
+                .dbPath(tempDir)
+                .segmentSize(300)
+                .maxKeyMemoryMb(4)
+                .build();
+
+        try (OffHeapKeyDir index = new OffHeapKeyDir(4);
+             StorageEngine engine = new StorageEngine(config)) {
+
+            // Write record to segment 1 and force rollover to segment 2
+            BinaryRecord rec1 = new BinaryRecord(System.currentTimeMillis(), "k1".getBytes(), new byte[150], 0);
+            StorageEngine.WriteResult res1 = engine.write(rec1);
+            index.put(rec1.key(), res1.fileId(), res1.valueSize(), res1.valueOffset(), res1.keyOffset(), res1.timestamp());
+
+            // Write second record which exceeds remaining space in segment 1 and triggers rollover to segment 2
+            BinaryRecord rec2 = new BinaryRecord(System.currentTimeMillis(), "k2".getBytes(), new byte[150], 0);
+            StorageEngine.WriteResult res2 = engine.write(rec2);
+            index.put(rec2.key(), res2.fileId(), res2.valueSize(), res2.valueOffset(), res2.keyOffset(), res2.timestamp());
+
+            assertTrue(engine.getActiveFileId() > 1, "Expected rollover to active segment > 1");
+            Path seg1File = tempDir.resolve("00000001.data");
+            assertTrue(Files.exists(seg1File));
+
+            // Truncate segment 1 to a corrupt size (< 22 bytes)
+            Files.write(seg1File, new byte[]{1, 2, 3, 4, 5});
+
+            try (Compactor compactor = new Compactor(config, engine, index)) {
+                compactor.compact();
+            }
+
+            // Fault tolerance: the corrupt/truncated source segment MUST NOT be deleted
+            assertTrue(Files.exists(seg1File), "Compactor must abort and NOT delete truncated/corrupt source segment file");
+        }
+    }
 }
+

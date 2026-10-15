@@ -222,4 +222,36 @@ We will implement persistent configuration metadata within each database directo
 > 3. Exposed `getConfig()` on `VulcanoStoreImpl` to query the active configuration.
 > 4. Verified all 40 tests are successfully green.
 
+---
+
+## 📋 Phase 13: Compactor Redesign, Concurrency & Lifecycle Lock Safety
+We will resolve critical data-loss bugs, infinite compaction rollover loops, unsynchronized append race conditions, and directory lock safety.
+
+* [x] **Task 13.1: Write failing TDD tests for Compactor and Concurrency**
+  * *Red:* Write `testMultiSegmentCompactionWithActiveDataGreaterThanSegmentSize` asserting that segments with 0 dead records are skipped and no infinite rollover loop occurs.
+  * *Red:* Write `testConcurrentIngestionAndCompactionStress` asserting zero dropped records and no buffer overflow or concurrency errors during high-volume concurrent writes and background compaction.
+  * *Red:* Write `testFaultToleranceAbortOnFailure` asserting that corrupted or truncated segment files are never deleted on compactor errors.
+  * *Red:* Write `testExclusiveDatabaseDirectoryLock` asserting that opening multiple instances on the same directory throws `IllegalStateException`.
+* [x] **Task 13.2: Synchronize `StorageEngine` writes & segment management**
+  * *Green:* Add `ReentrantLock` to guard `write()`, `getOrLoadSegment()`, `closeAndRemoveSegment()`, and `close()`, and use `ConcurrentHashMap` for inactive segments.
+* [x] **Task 13.3: Redesign `Compactor` with thresholding, atomic validation, and SLF4J logging**
+  * *Green:* Skip segments containing 100% active records (`deadRecords == 0`).
+  * *Green:* Add explicit error handling with `org.slf4j.Logger` and abort segment deletion if scan or migration fails.
+  * *Green:* Re-verify active slot coordinates under `synchronized (index)` before and after writing migrated records to prevent overwriting newer user writes.
+* [x] **Task 13.4: Implement directory lockfile (`vulcano.lock`) and deadlock-free close in `VulcanoStoreImpl`**
+  * *Green:* Acquire exclusive OS lock via `FileChannel.tryLock()` on `vulcano.lock` in `VulcanoStoreImpl` constructor.
+  * *Green:* Shut down background compactor outside `index` monitor before closing storage engine and index to prevent deadlocks.
+  * *Green:* Verify all 44 unit and integration tests are 100% green.
+
+> [!NOTE]
+> **Phase 13 Execution Report:** Successfully resolved all compactor bugs, concurrency races, and directory locking safety issues following strict TDD.
+> 1. **Infinite Compaction Rollover Loop Resolved:** Implemented threshold-based compaction in `Compactor.java`. Inactive segments containing 100% active records (`deadRecords == 0`) are skipped, preventing infinite rollover churn when active data exceeds segment size.
+> 2. **StorageEngine Concurrency Hardening:** Guarded all writes, rollovers, segment lookups, and segment removals in `StorageEngine.java` using a `ReentrantLock` and `ConcurrentHashMap`, guaranteeing thread-safe execution across concurrent ingestion threads and the background compactor.
+> 3. **Fault Tolerance & Zero Premature Deletions:** Replaced silent exception swallowing with structured `org.slf4j.Logger` logging. Inactive segments are only removed after confirming 100% of all active records were successfully migrated and verified. Corrupt/truncated segments are safely preserved.
+> 4. **Atomic Swapping Validation:** Ensured compactor checks and re-verifies slot coordinates under the `index` monitor, preventing overwrites of newer records updated by concurrent user writes.
+> 5. **Exclusive Process Lock:** Implemented `vulcano.lock` via `FileChannel.tryLock()` to prevent multiple JVM instances or OS processes from opening the same storage folder.
+> 6. **Deadlock-Free Clean Shutdown:** Reordered `VulcanoStoreImpl.close()` to stop and join the compactor thread outside the index monitor before closing engine channels and native FFM arenas.
+> 7. **Test Suite Verification:** All 44 tests pass cleanly with zero failures (`mvn clean test`).
+
+
 
